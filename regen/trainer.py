@@ -108,7 +108,7 @@ class NCA3DTrainer:
         # Initialize loss function (ignore predictions for "dead" cells)
         # Use class weights to emphasize damage indices (1-6) more than no-damage (0)
         damage_weights = torch.ones(self.model.num_damage_directions)
-        damage_weights[1:] = 2.0  # Higher weight for damage indices (1-6)
+        damage_weights[1:] = 3.0  # Higher weight for damage indices (1-6)
         self.loss_fn = nn.CrossEntropyLoss(
             weight=damage_weights.to(self.device), reduction="none"
         )
@@ -220,8 +220,14 @@ class NCA3DTrainer:
             predictions = self.model.classify(final_state)
 
             # Calculate loss using alive pixels
+            # Apply higher weight to actual damage areas
+            # damage_mask = (damage_directions > 0).float()
+            # weights = 1.0 + damage_mask * 0.5  # 1.5x weight for actual damage areas
+
             loss = self.loss_function(
-                predictions, damage_directions, final_state[:, :, :, :, :1]
+                predictions,
+                damage_directions,
+                final_state[:, :, :, :, :1],
             )
 
             # Backpropagation
@@ -330,7 +336,7 @@ class NCA3DTrainer:
                     predicted_labels = torch.argmax(predictions, dim=-1).detach().cpu()
 
                     # Calculate accuracy
-                    total += damage_direction.size(0)
+                    total += np.prod(damage_direction.shape)
                     correct += (predicted_labels == damage_direction).sum().item()
 
             accuracy = 100 * correct / total
@@ -377,9 +383,7 @@ class NCA3DTrainer:
 
         with torch.no_grad():
             # Get a sample
-            damage_mask_tensor, damage_direction_tensor, label, _ = next(
-                iter(DataLoader(self.dataset, batch_size=1, shuffle=True))
-            )
+            damage_mask_tensor, damage_direction_tensor, label, _ = self.dataset[26]
             damage_mask_tensor = damage_mask_tensor.to(self.device)
             damage_direction_tensor = damage_direction_tensor.to(self.device)
             label = label.to(self.device)

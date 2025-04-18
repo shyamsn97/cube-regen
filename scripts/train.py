@@ -20,10 +20,10 @@ env_variables = {
     timeout=60*60*21
 )
 def train(shapes, labels):
-    model = NCA3DDamageDetection()
+    model = NCA3DDamageDetection(use_tanh=False)
     dataset = DynamicDamageDataset(shapes, labels, damage_radius_range=(1, 3), damage_types=["sphere", "cube", "random"], random_proportion_range=(0.1, 0.2), fixed_damage=False, augment_rotations=False, return_damage_mask=True, seed=None, filter_label=3)
     trainer = NCA3DTrainer(model, dataset, batch_size=8, lr=0.0001, iterations_per_epoch=100, steps_per_sample=96, buffer_size=1000, buffer_sampling_prob=0.5)
-    trainer.train(epochs=100, save_frequency=10, visualization_frequency=10)
+    trainer.train(epochs=500, save_frequency=10, visualization_frequency=10)
 
 @app.local_entrypoint()
 def main():
