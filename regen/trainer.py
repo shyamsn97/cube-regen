@@ -6,6 +6,7 @@ from collections import deque
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 
 # Combine images side by side
@@ -70,6 +71,7 @@ class NCA3DTrainer:
         buffer_sampling_prob=0.5,
         device=None,
         save_dir="./nca_models",
+        repo_id="shyamsn97/cube",
     ):
         """
         Train a 3D NCA model for damage detection.
@@ -85,6 +87,7 @@ class NCA3DTrainer:
             buffer_sampling_prob: Probability of sampling from buffer vs. from scratch
             device: Device to train on (cpu or cuda)
             save_dir: Directory to save models
+            repo_id: Repository ID for weights
         """
         self.model = model
         self.dataset = dataset
@@ -108,7 +111,7 @@ class NCA3DTrainer:
         # Initialize loss function (ignore predictions for "dead" cells)
         # Use class weights to emphasize damage indices (1-6) more than no-damage (0)
         damage_weights = torch.ones(self.model.num_damage_directions)
-        damage_weights[1:] = 3.0  # Higher weight for damage indices (1-6)
+        damage_weights[1:] = 1.0  # Higher weight for damage indices (1-6)
         self.loss_fn = nn.CrossEntropyLoss(
             weight=damage_weights.to(self.device), reduction="none"
         )
@@ -122,12 +125,13 @@ class NCA3DTrainer:
         # Initialize metrics tracking
         self.train_losses = []
         self.val_losses = []
+        self.repo_id = repo_id
 
         # Create save directory if it doesn't exist
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
-    def loss_function(self, predictions, targets, structure_mask):
+    def loss_function(self, predictions, targets, final_state):
         """
         Custom loss function that ignores predictions for "dead" cells.
 
@@ -139,6 +143,7 @@ class NCA3DTrainer:
         Returns:
             loss: Mean loss over alive cells
         """
+        structure_mask = final_state[:, :, :, :, :1]
         # Reshape predictions for CrossEntropyLoss
         batch, d, h, w, n_class = predictions.shape
         pred_flat = (
@@ -148,6 +153,8 @@ class NCA3DTrainer:
 
         # Calculate per-cell loss
         cell_loss = self.loss_fn(pred_flat, targets_flat)
+        # if not self.model.use_tanh:
+        #     clip_loss = F.mse_loss(pred_flat, targets_flat, reduction='none')
 
         # Mask for alive cells
         alive_mask = (
@@ -156,6 +163,23 @@ class NCA3DTrainer:
 
         # Apply mask and average
         masked_loss = (cell_loss * alive_mask).sum() / (alive_mask.sum() + 1e-8)
+
+        if not self.model.use_tanh:
+            with torch.no_grad():
+                clipped_states = torch.clamp(
+                    final_state.detach(),
+                    -self.model.clip_range,
+                    self.model.clip_range,
+                )
+            clip_loss = (
+                F.mse_loss(final_state, clipped_states, reduction="none")
+                .sum(dim=-1)
+                .view(batch, -1)
+            )
+            masked_clip_loss = (clip_loss * alive_mask).sum() / (
+                alive_mask.sum() + 1e-8
+            )
+            masked_loss += masked_clip_loss.mean()
 
         return masked_loss
 
@@ -227,7 +251,7 @@ class NCA3DTrainer:
             loss = self.loss_function(
                 predictions,
                 damage_directions,
-                final_state[:, :, :, :, :1],
+                final_state,
             )
 
             # Backpropagation
@@ -272,7 +296,7 @@ class NCA3DTrainer:
             "loss": loss,
         }
         torch.save(checkpoint, f"{self.save_dir}/nca_epoch_{epoch}_loss_{loss:.4f}.pt")
-        save_weights(self.model, epoch)
+        save_weights(self.model, epoch, repo_id=self.repo_id)
 
     def load_model(self, checkpoint_path):
         """Load a model checkpoint."""
@@ -363,11 +387,11 @@ class NCA3DTrainer:
             # Save model
             if epoch % save_frequency == 0 or epoch == epochs - 1:
                 self.save_model(epoch, train_loss)
-                # Log model to wandb
-                model_path = (
-                    f"{self.save_dir}/nca_epoch_{epoch}_loss_{train_loss:.4f}.pt"
-                )
-                wandb.save(model_path)
+                # # Log model to wandb
+                # model_path = (
+                #     f"{self.save_dir}/nca_epoch_{epoch}_loss_{train_loss:.4f}.pt"
+                # )
+                # wandb.save(model_path)
 
             # Visualize results
             if epoch % visualization_frequency == 0 or epoch == epochs - 1:
@@ -383,7 +407,10 @@ class NCA3DTrainer:
 
         with torch.no_grad():
             # Get a sample
-            damage_mask_tensor, damage_direction_tensor, label, _ = self.dataset[26]
+            damage_mask_tensor, damage_direction_tensor, label, _ = self.dataset[0]
+            damage_mask_tensor = damage_mask_tensor.unsqueeze(0)
+            damage_direction_tensor = damage_direction_tensor.unsqueeze(0)
+            label = label.unsqueeze(0)
             damage_mask_tensor = damage_mask_tensor.to(self.device)
             damage_direction_tensor = damage_direction_tensor.to(self.device)
             label = label.to(self.device)

@@ -26,6 +26,7 @@ class DynamicDamageDataset(Dataset):
         return_damage_mask: bool = False,
         seed: Optional[int] = None,
         filter_label: Optional[int] = None,
+        filter_indices: Optional[List[int]] = None,
     ):
         """
         Initialize the dataset with 3D shapes and configuration for dynamic damage generation.
@@ -41,6 +42,7 @@ class DynamicDamageDataset(Dataset):
             return_damage_mask: If True, also return the mask showing where damage was applied
             seed: Optional random seed for reproducibility
             filter_label: Optional label class to filter
+            filter_indices: Optional list of indices to filter
         """
         super().__init__()
 
@@ -53,6 +55,7 @@ class DynamicDamageDataset(Dataset):
         self.fixed_damage = fixed_damage
         self.augment_rotations = augment_rotations
         self.return_damage_mask = return_damage_mask
+        self.filter_indices = filter_indices
 
         # Validate inputs
         if len(shapes) != len(labels):
@@ -87,6 +90,9 @@ class DynamicDamageDataset(Dataset):
                 if label == filter_label
             ]
             self.labels = [label for label in self.labels if label == filter_label]
+        if filter_indices is not None:
+            self.shapes = [self.shapes[i] for i in filter_indices]
+            self.labels = [self.labels[i] for i in filter_indices]
 
     def __len__(self):
         return len(self.shapes)
@@ -120,11 +126,12 @@ class DynamicDamageDataset(Dataset):
             original_shape_tensor,
         )
 
-    def _generate_damage(self, shape):
+    def _generate_damage(self, shape, damage_type=None):
         """Generate a random damage pattern for a shape."""
         # Choose damage parameters
         radius = random.randint(*self.damage_radius_range)
-        damage_type = random.choice(self.damage_types)
+        if damage_type is None:
+            damage_type = random.choice(self.damage_types)
 
         random_proportion = None
         if damage_type == "random":

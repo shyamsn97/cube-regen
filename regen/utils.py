@@ -198,7 +198,7 @@ def plot_voxels(live_mask, damage_direction):
     return pil_image
 
 
-def save_weights(model, it, binary=False):
+def save_weights(model, it, repo_id="shyamsn97/cube", binary=False):
     import numpy as np
 
     # Extract weights from the perceive layer
@@ -414,16 +414,30 @@ def save_weights(model, it, binary=False):
 
     # Optional upload to Hugging Face
     try:
+        import torch
         from huggingface_hub import HfApi
 
         api = HfApi()
+
+        # Save and upload text weights
         weights_name = "weights_binary.txt" if binary else "weights.txt"
         api.upload_file(
             path_or_fileobj=f"neural_network_output_damage_detection_{it}.txt",
             path_in_repo=weights_name,
-            repo_id="shyamsn97/cube",
+            repo_id=repo_id,
             repo_type="dataset",
         )
+
+        # Save and upload torch weights
+        torch_weights_path = f"model_weights_{it}.pt"
+        torch.save(model.state_dict(), torch_weights_path)
+        api.upload_file(
+            path_or_fileobj=torch_weights_path,
+            path_in_repo=f"model_weights_{it}.pt",
+            repo_id=repo_id,
+            repo_type="dataset",
+        )
+
         print(f"Uploaded weights to Hugging Face repository 'shyamsn97/cube'")
     except ImportError:
         print(

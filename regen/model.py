@@ -1,14 +1,15 @@
+import re
+
+import numpy as np
 import torch
 import torch.nn as nn
-import re
-import numpy as np
 
 
 class NCA3DDamageDetection(nn.Module):
     def __init__(
         self,
         use_class_embeddings: bool = True,
-        num_hidden_channels: int = 20,
+        num_hidden_channels: int = 128,
         num_classes: int = 7,
         num_damage_directions: int = 7,
         alpha_living_threshold: float = 0.1,
@@ -50,7 +51,8 @@ class NCA3DDamageDetection(nn.Module):
                 kernel_size=3,
                 padding=1,
                 bias=False,
-            )
+            ),
+            nn.ReLU(),
         )
 
         # Processing network
@@ -144,143 +146,137 @@ class NCA3DDamageDetection(nn.Module):
 def load_weights_from_file(model, weights_file_path):
     """
     Load weights from a text file in the format saved by the save_weights function.
-    
+
     Args:
         model: The NCA3DDamageDetection model to load weights into
         weights_file_path: Path to the weights file
-    
+
     Returns:
         The model with loaded weights
     """
     # Read the weights file
-    with open(weights_file_path, 'r') as f:
+    with open(weights_file_path, "r") as f:
         content = f.read()
-    
+
     # Extract dimensions from the file
     in_channels = model.channel_n
     out_channels = model.perception_channels
     dmodel_out = model.channel_n - 1
-    
+
     # Helper function to extract array data
     def extract_array(pattern, content, shape):
         match = re.search(pattern, content, re.DOTALL)
         if not match:
             raise ValueError(f"Could not find pattern: {pattern}")
-        
+
         # Extract the array content
         array_str = match.group(1)
-        
+
         # Parse the array content
         if len(shape) == 1:
             # 1D array
-            values = re.findall(r'(-?\d+\.?\d*e?[-+]?\d*)', array_str)
+            values = re.findall(r"(-?\d+\.?\d*e?[-+]?\d*)", array_str)
             array = np.array([float(v) for v in values])
         elif len(shape) == 2:
             # 2D array
-            rows = re.findall(r'{([^}]*)},?', array_str)
+            rows = re.findall(r"{([^}]*)},?", array_str)
             array = np.zeros(shape)
             for i, row in enumerate(rows):
                 if i >= shape[0]:
                     break
-                values = re.findall(r'(-?\d+\.?\d*e?[-+]?\d*)', row)
+                values = re.findall(r"(-?\d+\.?\d*e?[-+]?\d*)", row)
                 for j, val in enumerate(values):
                     if j >= shape[1]:
                         break
                     array[i, j] = float(val)
-        
+
         return array
-    
+
     # Extract all the kernel weights
     percieve_back = extract_array(
-        r'percieve_kernel_back\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (in_channels, out_channels)
+        r"percieve_kernel_back\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (in_channels, out_channels),
     ).T
-    
+
     percieve_front = extract_array(
-        r'percieve_kernel_front\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (in_channels, out_channels)
+        r"percieve_kernel_front\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (in_channels, out_channels),
     ).T
-    
+
     percieve_top = extract_array(
-        r'percieve_kernel_north\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (in_channels, out_channels)
+        r"percieve_kernel_north\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (in_channels, out_channels),
     ).T
-    
+
     percieve_bottom = extract_array(
-        r'percieve_kernel_south\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (in_channels, out_channels)
+        r"percieve_kernel_south\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (in_channels, out_channels),
     ).T
-    
+
     percieve_right = extract_array(
-        r'percieve_kernel_east\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (in_channels, out_channels)
+        r"percieve_kernel_east\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (in_channels, out_channels),
     ).T
-    
+
     percieve_left = extract_array(
-        r'percieve_kernel_west\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (in_channels, out_channels)
+        r"percieve_kernel_west\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (in_channels, out_channels),
     ).T
-    
+
     percieve_self = extract_array(
-        r'percieve_kernel_self\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (in_channels, out_channels)
+        r"percieve_kernel_self\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (in_channels, out_channels),
     ).T
-    
+
     # Extract biases
     perceive_bias = extract_array(
-        r'percieve_bias\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (out_channels,)
+        r"percieve_bias\[\d+\]\s*=\s*{(.*?)};", content, (out_channels,)
     )
-    
+
     dmodel_bias_1 = extract_array(
-        r'dmodel_bias1\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (out_channels,)
+        r"dmodel_bias1\[\d+\]\s*=\s*{(.*?)};", content, (out_channels,)
     )
-    
+
     dmodel_bias_2 = extract_array(
-        r'dmodel_bias2\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (dmodel_out,)
+        r"dmodel_bias2\[\d+\]\s*=\s*{(.*?)};", content, (dmodel_out,)
     )
-    
+
     # Extract kernels
     dmodel_kernel_1 = extract_array(
-        r'dmodel_kernel_1\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (out_channels, out_channels)
+        r"dmodel_kernel_1\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (out_channels, out_channels),
     )
-    
+
     dmodel_kernel_2 = extract_array(
-        r'dmodel_kernel_2\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-        content, 
-        (out_channels, dmodel_out)
+        r"dmodel_kernel_2\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+        content,
+        (out_channels, dmodel_out),
     ).T
-    
+
     # Extract class embeddings if available
     if model.use_class_embeddings:
         try:
             class_embeddings = extract_array(
-                r'class_embeddings\[\d+\]\[\d+\]\s*=\s*{(.*?)};', 
-                content, 
-                (model.num_classes, dmodel_out)
+                r"class_embeddings\[\d+\]\[\d+\]\s*=\s*{(.*?)};",
+                content,
+                (model.num_classes, dmodel_out),
             )
             model.class_embeddings.weight.data = torch.tensor(
-                class_embeddings, 
-                dtype=torch.float32, 
-                device=model.class_embeddings.weight.device
+                class_embeddings,
+                dtype=torch.float32,
+                device=model.class_embeddings.weight.device,
             )
         except Exception as e:
             print(f"Warning: Could not load class embeddings: {e}")
-    
+
     # Reconstruct the perceive kernel
     perceive_kernel = np.zeros((model.perception_channels, model.channel_n, 3, 3, 3))
     perceive_kernel[:, :, 1, 1, 1] = percieve_self
@@ -290,58 +286,51 @@ def load_weights_from_file(model, weights_file_path):
     perceive_kernel[:, :, 1, 0, 1] = percieve_left
     perceive_kernel[:, :, 1, 1, 0] = percieve_front
     perceive_kernel[:, :, 1, 1, 2] = percieve_back
-    
+
     # Reshape to match PyTorch's expected format
     perceive_weights = perceive_kernel.reshape(
         model.perception_channels, model.channel_n, 3, 3, 3
     )
-    
+
     # Load weights into the model
     model.perceive[0].weight.data = torch.tensor(
-        perceive_weights, 
-        dtype=torch.float32, 
-        device=model.perceive[0].weight.device
+        perceive_weights, dtype=torch.float32, device=model.perceive[0].weight.device
     )
-    
+
     if model.perceive[0].bias is not None:
         model.perceive[0].bias.data = torch.tensor(
-            perceive_bias, 
-            dtype=torch.float32, 
-            device=model.perceive[0].bias.device
+            perceive_bias, dtype=torch.float32, device=model.perceive[0].bias.device
         )
-    
+
     # Load dmodel weights
     dmodel_layer1 = model.dmodel[1]  # First conv layer after ReLU
     dmodel_layer1.weight.data = torch.tensor(
-        dmodel_kernel_1.reshape(dmodel_layer1.weight.shape), 
-        dtype=torch.float32, 
-        device=dmodel_layer1.weight.device
+        dmodel_kernel_1.reshape(dmodel_layer1.weight.shape),
+        dtype=torch.float32,
+        device=dmodel_layer1.weight.device,
     )
     dmodel_layer1.bias.data = torch.tensor(
-        dmodel_bias_1, 
-        dtype=torch.float32, 
-        device=dmodel_layer1.bias.device
+        dmodel_bias_1, dtype=torch.float32, device=dmodel_layer1.bias.device
     )
-    
+
     dmodel_layer2 = model.dmodel[3]  # Last conv layer
     dmodel_layer2.weight.data = torch.tensor(
-        dmodel_kernel_2.reshape(dmodel_layer2.weight.shape), 
-        dtype=torch.float32, 
-        device=dmodel_layer2.weight.device
+        dmodel_kernel_2.reshape(dmodel_layer2.weight.shape),
+        dtype=torch.float32,
+        device=dmodel_layer2.weight.device,
     )
-    
+
     if dmodel_layer2.bias is not None:
         dmodel_layer2.bias.data = torch.tensor(
-            dmodel_bias_2, 
-            dtype=torch.float32, 
-            device=dmodel_layer2.bias.device
+            dmodel_bias_2, dtype=torch.float32, device=dmodel_layer2.bias.device
         )
-    
+
     # Apply the kernel mask to ensure the correct structure
     model.reset_diag_kernel()
-    
+
     return model
 
-# Example usage
-model = NCA3DDamageDetection()
-load_weights_from_file(model, 'weights.txt')
+
+# # Example usage
+# model = NCA3DDamageDetection()
+# load_weights_from_file(model, "weights.txt")
