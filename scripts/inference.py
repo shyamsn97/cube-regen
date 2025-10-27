@@ -22,17 +22,17 @@ def inference(model_repo_id="shyamsn97/table-cube-regen-damage-detection-20"):
     damage_mask, damage_direction, label, _ = dataset[0]
     state = loaded_model.initialize(damage_mask.unsqueeze(0))
     with torch.no_grad():
-        for i in range(96):
+        for i in range(128):
             state = loaded_model(state, label.unsqueeze(0))
             predictions = loaded_model.classify(state)
-            predictions = torch.argmax(predictions, dim=-1).detach().cpu().numpy()[0]
+            predictions = torch.argmax(predictions, dim=-1)
     print(predictions.shape)
     print(damage_mask.shape)
     print(damage_direction.shape)
     print("Damage Direction Accuracy: ", torch.mean((predictions.squeeze()[predictions.squeeze() != 0] == damage_direction.squeeze()[predictions.squeeze() != 0]).float()))
     print("Undamaged Accuracy: ", torch.mean((predictions.squeeze()[predictions.squeeze() == 0] == damage_direction.squeeze()[predictions.squeeze() == 0]).float()))
     ground_truth_img = plot_voxels(live_mask=damage_mask.squeeze().detach().cpu().numpy().astype(np.uint8), damage_direction=damage_direction.squeeze().detach().cpu().numpy().astype(np.uint8),)
-    predicted_img = plot_voxels(live_mask=damage_mask.squeeze().detach().cpu().numpy().astype(np.uint8), damage_direction=predictions.astype(np.uint8),)
+    predicted_img = plot_voxels(live_mask=damage_mask.squeeze().detach().cpu().numpy().astype(np.uint8), damage_direction=predictions.squeeze().detach().cpu().numpy().astype(np.uint8),)
 
     # Calculate dimensions for the combined image with labels
     label_height = 30  # Height for text labels

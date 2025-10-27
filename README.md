@@ -1,4 +1,4 @@
-# Base Template
+# Smart Cellular Bricks for Decentralized Shape Classification and Damage Recovery
 
 ## Training
 
