@@ -1,8 +1,12 @@
+import json
+import os
 import re
 
 import numpy as np
 import torch
 import torch.nn as nn
+from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import RepositoryNotFoundError
 
 
 class NCA3DDamageDetection(nn.Module):
@@ -331,6 +335,234 @@ def load_weights_from_file(model, weights_file_path):
     return model
 
 
+def save_config_to_json(model, filename: str = "config.json"):
+    """
+    Save model configuration to a JSON file.
+
+    Args:
+        model: The NCA3DDamageDetection model
+        filename: Name of the JSON file to save
+
+    Returns:
+        dict: The configuration dictionary that was saved
+    """
+    config = {
+        "model_type": "NCA3DDamageDetection",
+        "use_class_embeddings": model.use_class_embeddings,
+        "num_hidden_channels": model.num_hidden_channels,
+        "num_classes": model.num_classes,
+        "num_damage_directions": model.num_damage_directions,
+        "alpha_living_threshold": model.alpha_living_threshold,
+        "cell_fire_rate": model.cell_fire_rate,
+        "clip_range": model.clip_range,
+        "use_tanh": model.use_tanh,
+        "channel_n": model.channel_n,
+        "perception_channels": model.perception_channels,
+    }
+
+    with open(filename, "w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"Configuration saved to {filename}")
+    return config
+
+
+def load_config_from_json(filename: str = "config.json"):
+    """
+    Load model configuration from a JSON file.
+
+    Args:
+        filename: Name of the JSON file to load
+
+    Returns:
+        dict: The configuration dictionary
+    """
+    with open(filename, "r") as f:
+        config = json.load(f)
+
+    print(f"Configuration loaded from {filename}")
+    return config
+
+
+def create_model_from_config(config: dict):
+    """
+    Create a new NCA3DDamageDetection model from a configuration dictionary.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        NCA3DDamageDetection: New model instance
+    """
+    return NCA3DDamageDetection(
+        use_class_embeddings=config.get("use_class_embeddings", True),
+        num_hidden_channels=config.get("num_hidden_channels", 128),
+        num_classes=config.get("num_classes", 7),
+        num_damage_directions=config.get("num_damage_directions", 7),
+        alpha_living_threshold=config.get("alpha_living_threshold", 0.1),
+        cell_fire_rate=config.get("cell_fire_rate", 0.5),
+        clip_range=config.get("clip_range", 64.0),
+        use_tanh=config.get("use_tanh", True),
+    )
+
+
+def save_weights_to_huggingface(
+    model,
+    repo_id: str,
+    token: str = None,
+    commit_message: str = "Save model weights",
+    filename: str = "pytorch_model.pt",
+    save_config: bool = True,
+    config_filename: str = "config.json",
+):
+    """
+    Save model weights and configuration to Hugging Face Hub.
+
+    Args:
+        model: The NCA3DDamageDetection model to save
+        repo_id: Hugging Face repository ID (e.g., "username/model-name")
+        token: Hugging Face token (if not provided, will use cached token)
+        commit_message: Commit message for the upload
+        filename: Name of the weights file in the repository
+        save_config: Whether to also save the model configuration as JSON
+        config_filename: Name of the config file in the repository
+
+    Returns:
+        dict: Dictionary with URLs of uploaded files
+    """
+    try:
+        # Create or get the repository
+        api = HfApi()
+
+        # Create repository if it doesn't exist
+        try:
+            api.repo_info(repo_id, repo_type="model")
+        except RepositoryNotFoundError:
+            api.create_repo(repo_id, repo_type="model", exist_ok=True)
+
+        uploaded_files = {}
+
+        # Save model state dict to temporary file
+        temp_weights_path = f"temp_{filename}"
+        torch.save(model.state_dict(), temp_weights_path)
+
+        # Upload weights to Hugging Face Hub
+        weights_url = api.upload_file(
+            path_or_fileobj=temp_weights_path,
+            path_in_repo=filename,
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message=commit_message,
+            token=token,
+        )
+        uploaded_files["weights"] = weights_url
+
+        # Clean up weights file
+        os.remove(temp_weights_path)
+
+        # Save and upload config if requested
+        if save_config:
+            temp_config_path = f"temp_{config_filename}"
+            _ = save_config_to_json(model, temp_config_path)
+
+            config_url = api.upload_file(
+                path_or_fileobj=temp_config_path,
+                path_in_repo=config_filename,
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message=commit_message,
+                token=token,
+            )
+            uploaded_files["config"] = config_url
+
+            # Clean up config file
+            os.remove(temp_config_path)
+
+        print(f"Model successfully uploaded to {repo_id}")
+        print(f"Weights URL: {weights_url}")
+        if save_config:
+            print(f"Config URL: {uploaded_files['config']}")
+
+        return uploaded_files
+
+    except Exception as e:
+        print(f"Error uploading to Hugging Face Hub: {e}")
+        raise
+
+
+def load_weights_from_huggingface(
+    model,
+    repo_id: str,
+    token: str = None,
+    filename: str = "pytorch_model.pt",
+    load_config: bool = True,
+    config_filename: str = "config.json",
+):
+    """
+    Load model weights and configuration from Hugging Face Hub.
+
+    Args:
+        model: The NCA3DDamageDetection model to load weights into (can be None if load_config=True)
+        repo_id: Hugging Face repository ID (e.g., "username/model-name")
+        token: Hugging Face token (if not provided, will use cached token)
+        filename: Name of the weights file in the repository
+        load_config: Whether to also load the model configuration
+        config_filename: Name of the config file in the repository
+
+    Returns:
+        tuple: (model, config) if load_config=True, otherwise just model
+    """
+    try:
+        config = None
+
+        # Load config if requested
+        if load_config:
+            try:
+                config_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=config_filename,
+                    repo_type="model",
+                    token=token,
+                )
+                config = load_config_from_json(config_path)
+
+                # Create model from config if no model provided
+                if model is None:
+                    model = create_model_from_config(config)
+
+            except Exception as e:
+                print(f"Warning: Could not load config file: {e}")
+                print("Proceeding with weights-only loading...")
+
+        # Download and load the weights file
+        weights_path = hf_hub_download(
+            repo_id=repo_id, filename=filename, repo_type="model", token=token
+        )
+
+        # Load the weights
+        state_dict = torch.load(weights_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+
+        print(f"Model weights successfully loaded from {repo_id}")
+
+        if load_config and config:
+            return model, config
+        else:
+            return model
+
+    except Exception as e:
+        print(f"Error loading from Hugging Face Hub: {e}")
+        raise
+
+
 # # Example usage
 # model = NCA3DDamageDetection()
 # load_weights_from_file(model, "weights.txt")
+#
+# # Save to Hugging Face Hub (supports any filename)
+# save_weights_to_huggingface(model, "username/cube-regen-model", filename="model.pt")
+# save_weights_to_huggingface(model, "username/cube-regen-model", filename="weights.pth")
+# save_weights_to_huggingface(model, "username/cube-regen-model", filename="best_model.bin")
+#
+# # Load from Hugging Face Hub (must match the saved filename)
+# model = load_weights_from_huggingface(model, "username/cube-regen-model", filename="model.pt")

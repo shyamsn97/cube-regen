@@ -164,9 +164,9 @@ def plot_voxels(
                     direction = int(damage_direction[x, y, z])
                     colors_array[x, y, z] = color_map[direction]
                 else:
-                    colors_array[
-                        x, y, z
-                    ] = None  # Dead or damaged cells are transparent
+                    colors_array[x, y, z] = (
+                        None  # Dead or damaged cells are transparent
+                    )
 
     # Plot the voxels
     ax.voxels(live_mask, facecolors=colors_array, edgecolor="k", alpha=0.7)

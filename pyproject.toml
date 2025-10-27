@@ -10,6 +10,9 @@ authors = [
     { name = "Shyam Sudhakaran", email = "shyamsnair@protonmail.com" }
 ]
 dependencies = [
+    "torch",
+    "numpy",
+    "huggingface_hub>=0.16.0",
 ]
 [project.optional-dependencies]
 dev = [

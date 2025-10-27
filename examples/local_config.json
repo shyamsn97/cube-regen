@@ -1,0 +1,13 @@
+{
+  "model_type": "NCA3DDamageDetection",
+  "use_class_embeddings": true,
+  "num_hidden_channels": 128,
+  "num_classes": 7,
+  "num_damage_directions": 7,
+  "alpha_living_threshold": 0.1,
+  "cell_fire_rate": 0.5,
+  "clip_range": 64.0,
+  "use_tanh": true,
+  "channel_n": 136,
+  "perception_channels": 408
+}

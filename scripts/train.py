@@ -19,14 +19,16 @@ env_variables = {
     secrets=[modal.Secret.from_dict(env_variables)],
     timeout=60*60*21
 )
-def train(shapes, labels):
-    model = NCA3DDamageDetection(use_tanh=False, clip_range=64.0, num_hidden_channels=128)
+def train(shapes, labels, num_hidden_channels=20, model_repo_id="shyamsn97/table-cube-regen-damage-detection"):
+    model_repo_id = f"shyamsn97/table-cube-regen-damage-detection-{num_hidden_channels}"
+    repo_id = f"shyamsn97/table-cube-regen-damage-detection-txt-{num_hidden_channels}"
+    model = NCA3DDamageDetection(use_tanh=False, clip_range=64.0, num_hidden_channels=num_hidden_channels)
     dataset = DynamicDamageDataset(shapes, labels, damage_radius_range=(1, 3), damage_types=["sphere", "cube", "random"], random_proportion_range=(0.1, 0.2), fixed_damage=False, augment_rotations=False, return_damage_mask=True, seed=None, filter_label=3)
-    trainer = NCA3DTrainer(model, dataset, batch_size=8, lr=2e-5, iterations_per_epoch=100, steps_per_sample=96, buffer_size=1000, buffer_sampling_prob=0.5, repo_id="shyamsn97/cube-big")
+    trainer = NCA3DTrainer(model, dataset, batch_size=8, lr=2e-5, iterations_per_epoch=100, steps_per_sample=96, buffer_size=1000, buffer_sampling_prob=0.5, repo_id=repo_id, model_repo_id=model_repo_id)
     trainer.train(epochs=500, save_frequency=10, visualization_frequency=10)
 
 @app.local_entrypoint()
 def main():
     labels = np.load('../data/ydata_7class.npy')
     shapes = np.load('../data/xdata_7class.npy')
-    train.remote(shapes, labels)
+    train.remote(shapes, labels, num_hidden_channels=20, model_repo_id="shyamsn97/table-cube-regen-damage-detection")

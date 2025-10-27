@@ -14,6 +14,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from regen.model import save_weights_to_huggingface
 from regen.utils import plot_voxels, save_weights
 
 
@@ -72,6 +73,7 @@ class NCA3DTrainer:
         device=None,
         save_dir="./nca_models",
         repo_id="shyamsn97/cube",
+        model_repo_id="shyamsn97/cube-regen-damage-detection",
     ):
         """
         Train a 3D NCA model for damage detection.
@@ -126,7 +128,7 @@ class NCA3DTrainer:
         self.train_losses = []
         self.val_losses = []
         self.repo_id = repo_id
-
+        self.model_repo_id = model_repo_id
         # Create save directory if it doesn't exist
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
@@ -279,13 +281,14 @@ class NCA3DTrainer:
             accuracy = (correct * alive_mask).sum() / (alive_mask.sum() + 1e-8)
 
             # Update progress bar with loss and accuracy
+            batch_epoch_loss = epoch_loss / batch_count
             pbar.set_postfix(
                 {
-                    "loss": f"{epoch_loss/batch_count:.4f}",
+                    "loss": f"{batch_epoch_loss:.4f}",
                     "acc": f"{accuracy.item():.4f}",
                 }
             )
-        return epoch_loss / batch_count
+        return batch_epoch_loss
 
     def save_model(self, epoch, loss):
         """Save the model checkpoint."""
@@ -297,6 +300,7 @@ class NCA3DTrainer:
         }
         torch.save(checkpoint, f"{self.save_dir}/nca_epoch_{epoch}_loss_{loss:.4f}.pt")
         save_weights(self.model, epoch, repo_id=self.repo_id)
+        save_weights_to_huggingface(self.model, repo_id=self.model_repo_id)
 
     def load_model(self, checkpoint_path):
         """Load a model checkpoint."""
