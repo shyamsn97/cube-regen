@@ -126,15 +126,20 @@ def apply_damage(
     return new_live_mask, damage_direction
 
 
-def plot_voxels(live_mask, damage_direction):
+def plot_voxels(
+    live_mask, damage_direction, add_legend=False, remove_background=True, size=(10, 10)
+):
     """
     Plot a 3D visualization of the live mask with damage directions.
 
     Args:
         live_mask: 3D numpy array where 1 represents live cells and 0 represents dead cells
         damage_direction: 3D array indicating direction of nearby damage (0-6)
+        add_legend: Whether to add color legend
+        remove_background: Whether to remove all background elements (grid, axes, etc.)
+        size: Tuple specifying figure size (width, height)
     """
-    fig = plt.figure(figsize=(10, 10))
+    fig = plt.figure(figsize=size)
     ax = fig.add_subplot(111, projection="3d")
 
     # Define color map for damage directions
@@ -176,13 +181,36 @@ def plot_voxels(live_mask, damage_direction):
         plt.Rectangle((0, 0), 1, 1, color="yellow", label="Damage in -Z Direction"),
         plt.Rectangle((0, 0), 1, 1, color="black", label="Damage in +Z Direction"),
     ]
-    ax.legend(handles=legend_elements, loc="upper right", bbox_to_anchor=(1.3, 1))
+    if add_legend:
+        ax.legend(handles=legend_elements, loc="upper right", bbox_to_anchor=(1.3, 1))
 
-    # Set plot title and labels
-    ax.set_title("3D Voxels with Damage Visualization")
-    ax.set_xlabel("X axis")
-    ax.set_ylabel("Y axis")
-    ax.set_zlabel("Z axis")
+    # Remove grid lines, axis labels, and title
+    ax.grid(False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_zticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.set_zlabel("")
+
+    # Additional background removal options
+    if remove_background:
+        # Remove axes completely
+        ax.set_axis_off()
+        # Make figure background transparent
+        fig.patch.set_alpha(0.0)
+        ax.patch.set_alpha(0.0)
+        # Remove the pane backgrounds
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        # Make pane edges invisible
+        ax.xaxis.pane.set_edgecolor("w")
+        ax.yaxis.pane.set_edgecolor("w")
+        ax.zaxis.pane.set_edgecolor("w")
+        ax.xaxis.pane.set_alpha(0)
+        ax.yaxis.pane.set_alpha(0)
+        ax.zaxis.pane.set_alpha(0)
 
     # Set equal aspect ratio
     ax.set_box_aspect([1, 1, 1])
@@ -190,7 +218,7 @@ def plot_voxels(live_mask, damage_direction):
     plt.tight_layout()
     # Instead of saving the figure, directly convert it to a PIL image
     buf = BytesIO()
-    plt.savefig(buf, format="png")
+    plt.savefig(buf, format="png", transparent=remove_background)
     plt.close(fig)
     buf.seek(0)
     pil_image = Image.open(buf)
