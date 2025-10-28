@@ -1,8 +1,11 @@
 # Smart Cellular Bricks for Decentralized Shape Classification and Damage Recovery
 
+## Install
+```bash
+pip install -e .
+```
+
 ## Training
-
-
 We train models separately for each class, in this one we specify tables at index 3 in the dataset.
 
 ```python
@@ -26,7 +29,6 @@ if __name__ == "__main__":
 ```
 
 ## Inference
-
 To load the model:
 
 ```python

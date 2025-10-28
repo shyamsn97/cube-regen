@@ -10,8 +10,13 @@ authors = [
     { name = "Shyam Sudhakaran", email = "shyamsnair@protonmail.com" }
 ]
 dependencies = [
-    "torch",
     "numpy",
+    "torch",
+    "tensorboard",
+    "matplotlib",
+    "wandb",
+    "Pillow",
+    "tqdm",
     "huggingface_hub>=0.16.0",
 ]
 [project.optional-dependencies]
