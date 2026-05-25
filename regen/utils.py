@@ -142,34 +142,38 @@ def plot_voxels(
     fig = plt.figure(figsize=size)
     ax = fig.add_subplot(111, projection="3d")
 
-    # Define color map for damage directions
-    color_map = {
-        0: "blue",  # No damage direction
-        1: "gray",  # Damage in -x direction
-        2: "orange",  # Damage in +x direction
-        3: "purple",  # Damage in -y direction
-        4: "pink",  # Damage in +y direction
-        5: "yellow",  # Damage in -z direction
-        6: "black",  # Damage in +z direction
-    }
+    from matplotlib.colors import to_rgba
 
-    # Create a 3D array of colors
-    colors_array = np.empty(live_mask.shape, dtype=object)
+    color_names = [
+        "blue",
+        "gray",
+        "orange",
+        "purple",
+        "pink",
+        "yellow",
+        "black",
+        "red",
+        "green",
+        "skyblue",
+        "lightgreen",
+        "lightyellow",
+        "lightpink",
+    ]
+    color_rgba = np.array([to_rgba(c) for c in color_names])
 
-    # Fill the colors array based on live cells and damage direction
-    for x in range(live_mask.shape[0]):
-        for y in range(live_mask.shape[1]):
-            for z in range(live_mask.shape[2]):
-                if live_mask[x, y, z] == 1:  # Cell is alive
-                    direction = int(damage_direction[x, y, z])
-                    colors_array[x, y, z] = color_map[direction]
-                else:
-                    colors_array[x, y, z] = (
-                        None  # Dead or damaged cells are transparent
-                    )
+    dd = damage_direction.astype(int)
+    colors_array = color_rgba[dd]
+    colors_array[live_mask != 1] = 0
 
-    # Plot the voxels
-    ax.voxels(live_mask, facecolors=colors_array, edgecolor="k", alpha=0.7)
+    ax.voxels(
+        live_mask, facecolors=colors_array, edgecolor="k", linewidth=0.1, alpha=0.7
+    )
+
+    # Keep the camera scale fixed to the full voxel grid so damaged shapes
+    # don't get auto-zoomed larger when fewer voxels are present.
+    ax.set_xlim(0, live_mask.shape[0])
+    ax.set_ylim(0, live_mask.shape[1])
+    ax.set_zlim(0, live_mask.shape[2])
 
     # Add a legend for color meanings
     legend_elements = [
@@ -212,8 +216,8 @@ def plot_voxels(
         ax.yaxis.pane.set_alpha(0)
         ax.zaxis.pane.set_alpha(0)
 
-    # Set equal aspect ratio
-    ax.set_box_aspect([1, 1, 1])
+    # Match the aspect ratio to the underlying voxel grid dimensions.
+    ax.set_box_aspect(live_mask.shape)
 
     plt.tight_layout()
     # Instead of saving the figure, directly convert it to a PIL image

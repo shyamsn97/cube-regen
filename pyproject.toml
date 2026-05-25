@@ -18,6 +18,7 @@ dependencies = [
     "Pillow",
     "tqdm",
     "huggingface_hub>=0.16.0",
+    "PyYAML",
 ]
 [project.optional-dependencies]
 dev = [
