@@ -128,33 +128,3 @@ with torch.no_grad():
 ```
 
 An older damage-only example can be seen in [inference](./scripts/inference.py).
-
-## OpenAI Gym Analogy
-If you come from an OpenAI Gym or reinforcement learning background, you can think of each voxel shape as the environment state, and each NCA update step as the environment transition. The model observes the current damaged voxel grid, predicts local repair and classification signals, and then rolls the state forward for another step.
-
-It is not a standard Gym setup because there is no explicit policy taking discrete actions and no scalar reward being optimized online. Instead, training teaches the cellular automaton to behave like a learned environment dynamics plus repair rule, where repeated updates gradually recover structure and improve classification.
-
-
-
-```latex
-
-\begin{table}[t]
-\centering
-\caption{\textbf{Recovery accuracy by voxel resolution}}
-\label{table:resolution}
-
-{\small
-\begin{tabular}{lcccc}
-\toprule
-\textbf{Resolution / \#Hidden}
-& \textbf{20} & \textbf{48} & \textbf{96} & \textbf{128} \\
-\midrule
-$15 \times 15 \times 15$ & 0.71 & 0.83 & 0.98 & 0.98 \\
-$32 \times 32 \times 32$ & 0.40 & 0.54 & 0.87 & 0.96 \\
-$64 \times 64 \times 64$ & 0.38 & 0.53 & 0.87 & 0.96 \\
-\bottomrule
-\end{tabular}
-}
-\end{table}
-
-```
