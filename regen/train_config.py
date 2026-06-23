@@ -50,6 +50,9 @@ def load_training_data(
         shapes, labels, class_to_idx = load_shapenet_voxels(
             root=dataset_config["root"],
             categories=dataset_config.get("categories"),
+            sample_categories=dataset_config.get("sample_categories"),
+            category_seed=dataset_config.get("category_seed", config.get("seed", 0)),
+            shape_seed=dataset_config.get("shape_seed", config.get("seed", 0)),
             max_shapes_per_class=dataset_config.get("max_shapes_per_class"),
             target_size=dataset_config.get("target_size"),
             occupancy_threshold=dataset_config.get("occupancy_threshold", 0.5),
@@ -153,9 +156,13 @@ def train_combined_from_config(
         buffer_size=training_config.get("buffer_size", 1000),
         buffer_sampling_prob=training_config.get("buffer_sampling_prob", 0.5),
         grad_clip=training_config.get("grad_clip", 1.0),
+        gradient_checkpointing=training_config.get("gradient_checkpointing", False),
         device=_device(training_config.get("device")),
         checkpoint_dir=output_config.get("checkpoint_dir", "combined_nca_models"),
         num_workers=training_config.get("num_workers", 0),
+        validate_frequency=output_config.get("validate_frequency", 1),
+        repo_id=output_config.get("repo_id"),
+        repo_type=output_config.get("repo_type", "model"),
     )
 
     if class_to_idx is not None:
@@ -169,10 +176,9 @@ def train_combined_from_config(
         f"{len(val_dataset) if val_dataset is not None else 0} val, "
         f"{num_classes} classes)"
     )
-    trainer.fit(
+    trainer.train(
         epochs=training_config.get("epochs", 500),
         save_frequency=output_config.get("save_frequency", 10),
-        validate_frequency=output_config.get("validate_frequency", 1),
     )
     return trainer
 
@@ -211,9 +217,12 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
         steps_per_sample=training_config.get("steps_per_sample", 96),
         buffer_size=training_config.get("buffer_size", 1000),
         buffer_sampling_prob=training_config.get("buffer_sampling_prob", 0.5),
+        grad_clip=training_config.get("grad_clip", 1.0),
+        gradient_checkpointing=training_config.get("gradient_checkpointing", False),
         device=_device(training_config.get("device")),
         save_dir=output_config.get("save_dir", "nca_models"),
         repo_id=output_config.get("repo_id", "shyamsn97/cube"),
+        repo_type=output_config.get("repo_type", "model"),
         model_repo_id=output_config.get(
             "model_repo_id",
             "shyamsn97/cube-regen-damage-detection",

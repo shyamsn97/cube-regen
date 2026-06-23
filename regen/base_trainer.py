@@ -1,9 +1,11 @@
 import random
+from abc import ABC, abstractmethod
 from collections import deque
 
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.checkpoint import checkpoint
 from torch.utils.data import DataLoader
 
 
@@ -40,7 +42,7 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-class BaseNCA3DTrainer:
+class BaseNCA3DTrainer(ABC):
     """Shared training utilities for 3D NCA trainers."""
 
     def __init__(
@@ -54,6 +56,7 @@ class BaseNCA3DTrainer:
         buffer_sampling_prob=0.5,
         device=None,
         grad_clip=1.0,
+        gradient_checkpointing=False,
     ):
         self.model = model
         self.batch_size = batch_size
@@ -61,6 +64,7 @@ class BaseNCA3DTrainer:
         self.steps_per_sample = steps_per_sample
         self.buffer_sampling_prob = buffer_sampling_prob
         self.grad_clip = grad_clip
+        self.gradient_checkpointing = gradient_checkpointing
         self.device = (
             device
             if device is not None
@@ -117,13 +121,23 @@ class BaseNCA3DTrainer:
         return self.replay_buffer.sample(self.batch_size, self.device)
 
     def run_nca(self, states, labels=None):
-        states_history = [states]
+        states_history = [states.detach()]
         for _ in range(self.steps_per_sample):
             if labels is None:
-                states = self.model(states)
+                if self.gradient_checkpointing and self.model.training:
+                    states = checkpoint(self.model, states, use_reentrant=False)
+                else:
+                    states = self.model(states)
             else:
-                states = self.model(states, labels)
-            states_history.append(states)
+                if self.gradient_checkpointing and self.model.training:
+                    states = checkpoint(
+                        lambda current_states: self.model(current_states, labels),
+                        states,
+                        use_reentrant=False,
+                    )
+                else:
+                    states = self.model(states, labels)
+            states_history.append(states.detach())
         return states, states_history
 
     def add_replay_states(
@@ -203,3 +217,15 @@ class BaseNCA3DTrainer:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         return checkpoint["epoch"]
+
+    @abstractmethod
+    def train_epoch(self, epoch):
+        """Run one training epoch."""
+
+    @abstractmethod
+    def save_model(self, epoch, loss):
+        """Save a model checkpoint."""
+
+    @abstractmethod
+    def train(self, epochs, save_frequency=5, visualization_frequency=10):
+        """Run the full training loop."""

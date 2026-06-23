@@ -10,6 +10,9 @@ NPZ_VOXEL_KEYS = ("voxels", "occupancy", "x", "arr_0")
 def load_shapenet_voxels(
     root: str,
     categories: Optional[Sequence[str]] = None,
+    sample_categories: Optional[int] = None,
+    category_seed: int = 0,
+    shape_seed: int = 0,
     max_shapes_per_class: Optional[int] = None,
     target_size: Optional[int] = None,
     occupancy_threshold: float = 0.5,
@@ -34,19 +37,35 @@ def load_shapenet_voxels(
     if not root_path.exists():
         raise FileNotFoundError(f"ShapeNet root does not exist: {root_path}")
 
-    category_dirs = _category_dirs(root_path, categories)
+    category_dirs = _category_dirs(
+        root_path,
+        categories,
+        sample_categories=sample_categories,
+        category_seed=category_seed,
+    )
     if not category_dirs:
-        raise ValueError(f"No ShapeNet category folders found in {root_path}")
+        raise ValueError(
+            f"No ShapeNet category folders found in {root_path}. "
+            "For Modal runs, upload voxelized ShapeNet with "
+            "`make shapenet-volume-upload` so category folders appear under "
+            "`/data/shapenet_voxels`."
+        )
 
     class_to_idx = {
         category_dir.name: idx for idx, category_dir in enumerate(category_dirs)
     }
     shapes: List[np.ndarray] = []
     labels: List[int] = []
+    shape_rng = np.random.default_rng(shape_seed)
 
     for category_dir in category_dirs:
         files = _voxel_files(category_dir)
-        if max_shapes_per_class is not None:
+        if max_shapes_per_class is not None and len(files) > max_shapes_per_class:
+            indices = shape_rng.choice(
+                len(files), size=max_shapes_per_class, replace=False
+            )
+            files = sorted(files[int(index)] for index in indices)
+        elif max_shapes_per_class is not None:
             files = files[:max_shapes_per_class]
 
         for path in files:
@@ -59,7 +78,11 @@ def load_shapenet_voxels(
             labels.append(class_to_idx[category_dir.name])
 
     if not shapes:
-        raise ValueError(f"No voxel files found under {root_path}")
+        raise ValueError(
+            f"No .npy, .npz, or .binvox voxel files found under {root_path}. "
+            "Expected category folders containing voxel files, e.g. "
+            "`/data/shapenet_voxels/03001627/.../voxels.npy`."
+        )
 
     return np.stack(shapes), np.asarray(labels, dtype=np.int64), class_to_idx
 
@@ -139,7 +162,12 @@ def center_crop_or_pad(voxel: np.ndarray, target_size: int) -> np.ndarray:
     return result
 
 
-def _category_dirs(root: Path, categories: Optional[Sequence[str]]) -> List[Path]:
+def _category_dirs(
+    root: Path,
+    categories: Optional[Sequence[str]],
+    sample_categories: Optional[int] = None,
+    category_seed: int = 0,
+) -> List[Path]:
     if categories:
         category_dirs = [root / category for category in categories]
         missing = [path for path in category_dirs if not path.is_dir()]
@@ -148,7 +176,20 @@ def _category_dirs(root: Path, categories: Optional[Sequence[str]]) -> List[Path
             raise FileNotFoundError(f"Missing ShapeNet category folders: {missing_str}")
         return category_dirs
 
-    return sorted(path for path in root.iterdir() if path.is_dir())
+    category_dirs = sorted(path for path in root.iterdir() if path.is_dir())
+    if sample_categories is None:
+        return category_dirs
+    if sample_categories <= 0:
+        raise ValueError("sample_categories must be positive")
+    if sample_categories > len(category_dirs):
+        raise ValueError(
+            f"Cannot sample {sample_categories} ShapeNet categories from "
+            f"{len(category_dirs)} folders"
+        )
+
+    rng = np.random.default_rng(category_seed)
+    indices = rng.choice(len(category_dirs), size=sample_categories, replace=False)
+    return sorted(category_dirs[int(index)] for index in indices)
 
 
 def _voxel_files(category_dir: Path) -> List[Path]:

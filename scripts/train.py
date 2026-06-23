@@ -16,7 +16,7 @@ def parse_args():
     )
     parser.add_argument(
         "--config",
-        default="configs/train_local.yaml",
+        default="configs/train_combined.yaml",
         help="Path to a YAML training config.",
     )
     parser.add_argument(
@@ -76,14 +76,23 @@ def run_modal(config):
         "regen"
     )
     secrets = [modal.Secret.from_dict(env_variables)] if env_variables else []
+    volumes = {
+        volume_config["mount_path"]: modal.Volume.from_name(
+            volume_config["name"],
+            create_if_missing=volume_config.get("create_if_missing", False),
+        )
+        for volume_config in run_config.get("volumes", [])
+    }
 
     @app.function(
         gpu=run_config.get("gpu", "A10G"),
         image=image,
         secrets=secrets,
+        volumes=volumes,
         timeout=run_config.get("timeout_seconds", 60 * 60 * 21),
+        serialized=True,
     )
-    def train_remote(remote_config, shapes, labels, class_to_idx):
+    def train_remote(remote_config, shapes=None, labels=None, class_to_idx=None):
         from regen.train_config import train_from_config
 
         train_from_config(
@@ -93,9 +102,21 @@ def run_modal(config):
             class_to_idx=class_to_idx,
         )
 
-    shapes, labels, class_to_idx = load_training_data(config)
-    with app.run():
-        train_remote.remote(config, shapes, labels, class_to_idx)
+    detach = run_config.get("detach", True)
+    if config.get("dataset", {}).get("source") == "shapenet":
+        shapes, labels, class_to_idx = None, None, None
+    else:
+        shapes, labels, class_to_idx = load_training_data(config)
+
+    with app.run(detach=detach):
+        if detach:
+            call = train_remote.spawn(config, shapes, labels, class_to_idx)
+            call_id = getattr(call, "object_id", None) or getattr(
+                call, "function_call_id", None
+            )
+            print(f"Spawned Modal training call in detached app: {call_id or call}")
+        else:
+            train_remote.remote(config, shapes, labels, class_to_idx)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ pip install -e .
 Training is driven by YAML configs and a single entry point for both local and Modal runs.
 
 ```bash
-python scripts/train.py --config configs/train_local.yaml
+python scripts/train.py --config configs/train_combined.yaml
 ```
 
 The default config trains the combined model, which predicts both:
@@ -21,22 +21,22 @@ The default config trains the combined model, which predicts both:
 To train the same config on Modal:
 
 ```bash
-python scripts/train.py --config configs/train_modal.yaml
+python scripts/train.py --config configs/train_combined_modal.yaml
 ```
 
 You can also override the configured mode:
 
 ```bash
-python scripts/train.py --config configs/train_local.yaml --mode modal
-python scripts/train.py --config configs/train_modal.yaml --mode local
+python scripts/train.py --config configs/train_combined.yaml --mode modal
+python scripts/train.py --config configs/train_combined_modal.yaml --mode local
 ```
 
 ### Configs
 
 Available configs:
 
-- `configs/train_local.yaml`: local combined training from `data/xdata_7class.npy` and `data/ydata_7class.npy`
-- `configs/train_modal.yaml`: Modal combined training with the same dataset
+- `configs/train_combined.yaml`: local combined training from `data/xdata_7class.npy` and `data/ydata_7class.npy`
+- `configs/train_combined_modal.yaml`: Modal combined training with the same dataset
 - `configs/train_shapenet.yaml`: combined training from pre-voxelized ShapeNet folders
 
 Important sections:
@@ -84,6 +84,15 @@ dataset:
   max_shapes_per_class: 500
   target_size: 32
 ```
+
+For Modal ShapeNet runs, the Make targets download only the sampled files, upload that subset to the Modal volume, and then start a detached Modal training job:
+
+```bash
+make train-combined-shapenet-modal
+make train-damage-shapenet-modal
+```
+
+By default, the subset downloader caches the public ShapeNet voxel archive in `~/.cache/cube-regen/shapenet`, samples from it, writes the selected files to `data/shapenet_voxels`, uploads that directory to the Modal volume, and starts training. The config fields `sample_categories`, `max_shapes_per_class`, `category_seed`, and `shape_seed` control which files are selected.
 
 ## Inference
 To load the model:

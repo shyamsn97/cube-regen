@@ -57,5 +57,5 @@ mlruns/*
 */**/data/*
 */**/mca_models/*
 */**/wandb/*
-
+data/*
 .DS_Store

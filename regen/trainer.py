@@ -28,9 +28,12 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         steps_per_sample=96,
         buffer_size=1000,
         buffer_sampling_prob=0.5,
+        grad_clip=1.0,
+        gradient_checkpointing=False,
         device=None,
         save_dir="./nca_models",
         repo_id="shyamsn97/cube",
+        repo_type="model",
         model_repo_id="shyamsn97/cube-regen-damage-detection",
     ):
         """
@@ -59,6 +62,8 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             buffer_size=buffer_size,
             buffer_sampling_prob=buffer_sampling_prob,
             device=device,
+            grad_clip=grad_clip,
+            gradient_checkpointing=gradient_checkpointing,
         )
         self.save_dir = save_dir
 
@@ -77,6 +82,7 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         self.train_losses = []
         self.val_losses = []
         self.repo_id = repo_id
+        self.repo_type = repo_type
         self.model_repo_id = model_repo_id
         # Create save directory if it doesn't exist
         if not os.path.exists(save_dir):
@@ -182,9 +188,23 @@ class NCA3DTrainer(BaseNCA3DTrainer):
 
     def save_model(self, epoch, loss):
         """Save the model checkpoint."""
+        print(
+            f"Saving damage checkpoint for epoch {epoch} "
+            f"(loss={loss:.4f}) to {self.save_dir}"
+        )
         checkpoint = self.checkpoint_state(epoch, {"loss": loss})
-        torch.save(checkpoint, f"{self.save_dir}/nca_epoch_{epoch}_loss_{loss:.4f}.pt")
-        save_weights(self.model, epoch, repo_id=self.repo_id)
+        checkpoint_path = f"{self.save_dir}/nca_epoch_{epoch}_loss_{loss:.4f}.pt"
+        torch.save(checkpoint, checkpoint_path)
+        print(f"Saved local checkpoint: {checkpoint_path}")
+        print(
+            "Uploading damage text/torch weights to "
+            f"Hugging Face {self.repo_type} repo '{self.repo_id}'"
+        )
+        save_weights(self.model, epoch, repo_id=self.repo_id, repo_type=self.repo_type)
+        print(
+            "Uploading damage model weights to "
+            f"Hugging Face model repo '{self.model_repo_id}'"
+        )
         save_weights_to_huggingface(self.model, repo_id=self.model_repo_id)
 
     def train(self, epochs, save_frequency=5, visualization_frequency=10):

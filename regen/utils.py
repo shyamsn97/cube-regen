@@ -230,7 +230,7 @@ def plot_voxels(
     return pil_image
 
 
-def save_weights(model, it, repo_id="shyamsn97/cube", binary=False):
+def save_weights(model, it, repo_id="shyamsn97/cube", binary=False, repo_type="model"):
     import numpy as np
 
     # Extract weights from the perceive layer
@@ -435,45 +435,46 @@ def save_weights(model, it, repo_id="shyamsn97/cube", binary=False):
 
     text_file.write("#endif")
     text_file.close()
+    text_weights_path = f"neural_network_output_damage_detection_{it}.txt"
+    print(f"Saved text weights: {text_weights_path}")
 
-    # Read and print the content (optional)
-    text_file = open(f"neural_network_output_damage_detection_{it}.txt", "r")
-    s = text_file.read()
-    print(
-        "=========================================================================== WEIGHTS ===========================================================================\n\n"
-    )
-    print(s)
-
-    # Optional upload to Hugging Face
     try:
         import torch
         from huggingface_hub import HfApi
 
         api = HfApi()
+        api.create_repo(repo_id=repo_id, repo_type=repo_type, exist_ok=True)
 
         # Save and upload text weights
         weights_name = "weights_binary.txt" if binary else "weights.txt"
-        api.upload_file(
-            path_or_fileobj=f"neural_network_output_damage_detection_{it}.txt",
+        weights_url = api.upload_file(
+            path_or_fileobj=text_weights_path,
             path_in_repo=weights_name,
             repo_id=repo_id,
-            repo_type="dataset",
+            repo_type=repo_type,
+            commit_message=f"Save text weights for epoch {it}",
         )
 
         # Save and upload torch weights
         torch_weights_path = f"model_weights_{it}.pt"
         torch.save(model.state_dict(), torch_weights_path)
-        api.upload_file(
+        torch_weights_url = api.upload_file(
             path_or_fileobj=torch_weights_path,
             path_in_repo=f"model_weights_{it}.pt",
             repo_id=repo_id,
-            repo_type="dataset",
+            repo_type=repo_type,
+            commit_message=f"Save torch weights for epoch {it}",
         )
 
-        print(f"Uploaded weights to Hugging Face repository 'shyamsn97/cube'")
+        print(f"Uploaded text weights to Hugging Face {repo_type} repo '{repo_id}'")
+        print(f"Weights URL: {weights_url}")
+        print(f"Torch weights URL: {torch_weights_url}")
     except ImportError:
         print(
             "Warning: huggingface_hub not installed. Skipping upload to Hugging Face."
         )
     except Exception as e:
-        print(f"Error uploading to Hugging Face: {e}")
+        raise RuntimeError(
+            f"Error uploading text weights to Hugging Face {repo_type} repo "
+            f"'{repo_id}': {e}"
+        ) from e

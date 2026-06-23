@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
+from huggingface_hub import HfApi
 from tqdm import tqdm
 
 from regen.base_trainer import BaseNCA3DTrainer
@@ -27,9 +28,13 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
         buffer_size: int = 1000,
         buffer_sampling_prob: float = 0.5,
         grad_clip: float = 1.0,
+        gradient_checkpointing: bool = False,
         device=None,
         checkpoint_dir: str = "./combined_nca_models",
         num_workers: int = 0,
+        validate_frequency: int = 1,
+        repo_id: Optional[str] = None,
+        repo_type: str = "model",
     ):
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
@@ -43,11 +48,17 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
             buffer_sampling_prob=buffer_sampling_prob,
             device=device,
             grad_clip=grad_clip,
+            gradient_checkpointing=gradient_checkpointing,
         )
         self.damage_loss_weight = damage_loss_weight
         self.class_loss_weight = class_loss_weight
         self.checkpoint_dir = checkpoint_dir
         self.best_val_loss = float("inf")
+        self.validate_frequency = validate_frequency
+        self.repo_id = repo_id
+        self.repo_type = repo_type
+        self.train_losses = []
+        self.val_losses = []
 
         damage_weights = torch.ones(self.model.num_damage_directions)
         self.damage_loss_fn = nn.CrossEntropyLoss(
@@ -60,7 +71,7 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
 
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-    def _losses_and_metrics(self, final_state, damage_directions, labels):
+    def loss_function(self, final_state, damage_directions, labels):
         damage_logits = self.model.damage_logits(final_state)
         class_logits = self.model.class_logits(final_state)
 
@@ -136,7 +147,7 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
                     labels,
                 )
 
-            loss, metrics = self._losses_and_metrics(
+            loss, metrics = self.loss_function(
                 final_state,
                 damage_directions,
                 labels,
@@ -173,7 +184,7 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
             states = self.model.initialize(structures)
             final_state, _ = self.run_nca(states)
 
-            _, metrics = self._losses_and_metrics(
+            _, metrics = self.loss_function(
                 final_state,
                 damage_directions,
                 labels,
@@ -184,7 +195,19 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
 
         return {key: value / batch_count for key, value in totals.items()}
 
-    def save_checkpoint(self, epoch: int, metrics: Dict[str, float], is_best=False):
+    def save_model(
+        self,
+        epoch,
+        loss,
+        metrics: Optional[Dict[str, float]] = None,
+        is_best=False,
+    ):
+        if metrics is None:
+            metrics = {"loss": loss}
+        print(
+            f"Saving combined checkpoint for epoch {epoch} "
+            f"(loss={loss:.4f}) to {self.checkpoint_dir}"
+        )
         checkpoint = self.checkpoint_state(
             epoch,
             {
@@ -194,37 +217,97 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
         )
         latest_path = os.path.join(self.checkpoint_dir, "combined_latest.pt")
         torch.save(checkpoint, latest_path)
+        print(f"Saved local checkpoint: {latest_path}")
 
         epoch_path = os.path.join(self.checkpoint_dir, f"combined_epoch_{epoch}.pt")
         torch.save(checkpoint, epoch_path)
+        print(f"Saved local checkpoint: {epoch_path}")
 
         config_path = os.path.join(self.checkpoint_dir, "config.json")
         with open(config_path, "w") as f:
             json.dump(self.model.get_config(), f, indent=2)
+        print(f"Saved model config: {config_path}")
 
         if is_best:
             best_path = os.path.join(self.checkpoint_dir, "combined_best.pt")
             torch.save(checkpoint, best_path)
+            print(f"Saved best checkpoint: {best_path}")
 
-    def fit(
+        if self.repo_id:
+            print(
+                "Uploading combined checkpoint artifacts to "
+                f"Hugging Face {self.repo_type} repo '{self.repo_id}'"
+            )
+            self.upload_checkpoint(
+                epoch=epoch,
+                latest_path=latest_path,
+                epoch_path=epoch_path,
+                config_path=config_path,
+                best_path=best_path if is_best else None,
+            )
+        else:
+            print("No Hugging Face repo configured for combined checkpoint upload.")
+
+    def upload_checkpoint(
         self,
-        epochs: int,
-        save_frequency: int = 10,
-        validate_frequency: int = 1,
+        epoch,
+        latest_path,
+        epoch_path,
+        config_path,
+        best_path=None,
     ):
+        api = HfApi()
+        api.create_repo(
+            repo_id=self.repo_id,
+            repo_type=self.repo_type,
+            exist_ok=True,
+        )
+
+        uploads = [
+            (latest_path, "combined_latest.pt"),
+            (epoch_path, f"combined_epoch_{epoch}.pt"),
+            (config_path, "config.json"),
+        ]
+        if best_path:
+            uploads.append((best_path, "combined_best.pt"))
+
+        for local_path, path_in_repo in uploads:
+            url = api.upload_file(
+                path_or_fileobj=local_path,
+                path_in_repo=path_in_repo,
+                repo_id=self.repo_id,
+                repo_type=self.repo_type,
+                commit_message=f"Save combined checkpoint for epoch {epoch}",
+            )
+            print(
+                "Uploaded combined checkpoint artifact to "
+                f"Hugging Face {self.repo_type} repo '{self.repo_id}': "
+                f"{path_in_repo} ({url})"
+            )
+
+    def train(
+        self,
+        epochs,
+        save_frequency=5,
+        visualization_frequency=10,
+    ):
+        del visualization_frequency
+
         for epoch in range(epochs):
             start = time.time()
             train_metrics = self.train_epoch(epoch)
+            self.train_losses.append(train_metrics["loss"])
             metrics = {f"train_{key}": value for key, value in train_metrics.items()}
 
             val_metrics = None
             should_validate = (
                 self.val_loader is not None
-                and validate_frequency > 0
-                and (epoch % validate_frequency == 0 or epoch == epochs - 1)
+                and self.validate_frequency > 0
+                and (epoch % self.validate_frequency == 0 or epoch == epochs - 1)
             )
             if should_validate:
                 val_metrics = self.validate()
+                self.val_losses.append(val_metrics["loss"])
                 metrics.update(
                     {f"val_{key}": value for key, value in val_metrics.items()}
                 )
@@ -234,10 +317,6 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
                 if val_metrics is not None
                 else train_metrics["loss"]
             )
-            is_best = monitor_loss < self.best_val_loss
-            if is_best:
-                self.best_val_loss = monitor_loss
-
             elapsed = time.time() - start
             log_parts = [
                 f"Epoch {epoch}",
@@ -259,5 +338,8 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
             should_save = save_frequency > 0 and (
                 epoch % save_frequency == 0 or epoch == epochs - 1
             )
-            if should_save or is_best:
-                self.save_checkpoint(epoch, metrics, is_best=is_best)
+            if should_save:
+                is_best = monitor_loss < self.best_val_loss
+                if is_best:
+                    self.best_val_loss = monitor_loss
+                self.save_model(epoch, monitor_loss, metrics=metrics, is_best=is_best)

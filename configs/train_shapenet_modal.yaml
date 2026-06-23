@@ -1,11 +1,32 @@
 seed: 0
 run:
-  mode: local
+  mode: modal
+  app_name: nca-3d-trainer
+  detach: true
+  gpu: A10G
+  timeout_seconds: 75600
+  secret_env: [HF_TOKEN, WANDB_API_KEY]
+  volumes:
+    - name: shapenet-voxels
+      mount_path: /data
+      create_if_missing: true
+  requirements:
+    - numpy
+    - torch
+    - tensorboard
+    - matplotlib
+    - wandb
+    - Pillow
+    - tqdm
+    - huggingface_hub
+    - PyYAML
 dataset:
   source: shapenet
-  root: data/shapenet_voxels
+  root: /data/shapenet_voxels
+  archive_url: https://cvgl.stanford.edu/data2/ShapeNetVox32.tgz
   sample_categories: 10
   category_seed: 0
+  shape_seed: 0
   max_shapes_per_class: 1
   target_size: 32
   occupancy_threshold: 0.5
@@ -23,19 +44,20 @@ model:
   train_perception: false
 training:
   epochs: 500
-  batch_size: 8
+  batch_size: 2
   lr: 0.00002
   iterations_per_epoch: 100
-  steps_per_sample: 96
+  steps_per_sample: 64
   damage_loss_weight: 1.0
   class_loss_weight: 1.0
   buffer_size: 1000
   buffer_sampling_prob: 0.5
   grad_clip: 1.0
+  gradient_checkpointing: true
   num_workers: 0
 output:
   checkpoint_dir: combined_shapenet_nca_models
-  save_frequency: 10
+  save_frequency: 20
   validate_frequency: 1
   repo_id: shyamsn97/shapenet-cube-regen-combined-48
   repo_type: model
