@@ -19,7 +19,7 @@ Run the local training example:
 python examples/sakana/train_sakana_damage.py
 ```
 
-The trainer uses the generated voxel as the only base shape, applies random sphere/cube damage each batch, and learns the 7-way damage direction labels through the repo's standard `NCA3DTrainer`. Sakana defaults to damage radius `3..6` and a `25x` class weight for nonzero damage-direction labels, because the target boundary cells are sparse. Watch `damaged_acc`, not just `alive_acc`. Outputs are written to `examples/sakana/outputs/`.
+The trainer uses the generated voxel as the only base shape, applies random sphere/cube damage each batch, and learns the 7-way damage direction labels through the repo's standard `NCA3DTrainer`. Watch `damaged_acc`, not just `alive_acc`, because most live voxels have the no-damage label. Outputs are written to `examples/sakana/outputs/`.
 
 For a faster smoke test:
 
@@ -35,16 +35,32 @@ python examples/sakana/train_sakana_damage.py --preview-damage
 
 This writes `sakana_damage_previews.png` plus individual `sakana_damage_sample_*.png` files. In those images, blue is the surviving voxel text, red is removed damage, and yellow is the damage-direction target boundary.
 
+Debug whether the model/loss can overfit one fixed damage sample:
+
+```bash
+python examples/sakana/train_sakana_damage.py \
+  --overfit-fixed-sample \
+  --epochs 1000 \
+  --iterations-per-epoch 8 \
+  --damage-radius-min 3 \
+  --damage-radius-max 3 \
+  --num-damage-sites-min 1 \
+  --num-damage-sites-max 1 \
+  --output-dir examples/sakana/outputs/overfit_fixed_sample
+```
+
+This forces `fixed_damage=True`, `num_samples=1`, `batch_size=1`, and disables replay.
+
 Run inference on deterministic sphere/cube damage cases:
 
 ```bash
 python examples/sakana/infer_sakana_damage.py
 ```
 
-This loads `examples/sakana/outputs/sakana_damage_model.pt` if it exists. To load the Hugging Face upload instead:
+This loads the Hugging Face model repo by default. To use a local checkpoint instead, pass `--checkpoint`:
 
 ```bash
-python examples/sakana/infer_sakana_damage.py --repo-id shyamsn97/sakana-cube-regen-damage-detection
+python examples/sakana/infer_sakana_damage.py --checkpoint examples/sakana/outputs/sakana_damage_model.pt
 ```
 
 or:
@@ -54,6 +70,14 @@ make visualize-sakana-damage
 ```
 
 The inference script intentionally supports only `sphere` and `cube` damage, not random damage. It writes a montage to `examples/sakana/outputs/inference/sakana_damage_inference.png`.
+
+Render an iterative 3D recovery GIF:
+
+```bash
+make visualize-sakana-recovery-gif
+```
+
+The recovery GIF applies multiple deterministic damage spots, predicts damage directions, adds neighboring voxels in the predicted directions, and repeats. Existing voxels are blue, predicted repair-boundary voxels are yellow, newly recovered voxels are green, and damaged voxels are empty holes.
 
 Run on Modal:
 

@@ -5,12 +5,32 @@
 pip install -e .
 ```
 
+## Pretrained Models
+
+- Normal combined model: [shyamsn97/cube-regen-combined](https://huggingface.co/shyamsn97/cube-regen-combined)
+- ShapeNet combined model: [shyamsn97/shapenet-cube-regen-combined-hdim-48](https://huggingface.co/shyamsn97/shapenet-cube-regen-combined-hdim-48)
+
+## Todo
+
+- In progress: clean pretrained model loading from Hugging Face
+- In progress: recovery script
+- In progress: live UI
+
 
 ## Training
 Training is driven by YAML configs and a single entry point for both local and Modal runs.
 
 ```bash
 python scripts/train.py --config configs/train_combined.yaml
+```
+
+Common training runs also have Make targets:
+
+```bash
+make train-damage
+make train-damage-modal
+make train-combined
+make train-combined-modal
 ```
 
 The default config trains the combined model, which predicts both:
@@ -38,6 +58,10 @@ Available configs:
 - `configs/train_combined.yaml`: local combined training from `data/xdata_7class.npy` and `data/ydata_7class.npy`
 - `configs/train_combined_modal.yaml`: Modal combined training with the same dataset
 - `configs/train_shapenet.yaml`: combined training from pre-voxelized ShapeNet folders
+- `configs/train_damage.yaml`: local damage-only training
+- `configs/train_damage_modal.yaml`: Modal damage-only training
+- `configs/train_damage_shapenet.yaml`: local ShapeNet damage-only training
+- `configs/train_damage_shapenet_modal.yaml`: Modal ShapeNet damage-only training
 
 Important sections:
 
@@ -62,6 +86,8 @@ model:
 dataset:
   filter_label: 3 # optional, for one-class damage-only training
 ```
+
+Damage configs use chunk-style `sphere`/`cube` damage, weighted cross entropy for sparse nonzero boundary labels, and lower replay sampling so fresh damage examples drive early learning.
 
 ### ShapeNet
 
@@ -137,3 +163,15 @@ with torch.no_grad():
 ```
 
 An older damage-only example can be seen in [inference](./scripts/inference.py).
+
+### Sakana Example
+
+The Sakana example trains on a generated 3D `SAKANA AI` voxel asset and includes Modal training, prediction montages, and an iterative 3D recovery GIF:
+
+```bash
+make train-sakana-modal
+make visualize-sakana-damage
+make visualize-sakana-recovery-gif
+```
+
+The visualization targets load the Hugging Face model repo by default. The recovery GIF applies multiple deterministic damage spots, repeatedly predicts damage directions, and adds repaired voxels back into the shape. See [`examples/sakana/README.md`](./examples/sakana/README.md) for the debug overfit command and more details.

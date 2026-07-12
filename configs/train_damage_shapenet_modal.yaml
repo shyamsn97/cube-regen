@@ -47,7 +47,7 @@ model:
 training:
   epochs: 500
   batch_size: 4
-  lr: 0.0002
+  lr: 0.001
   iterations_per_epoch: 100
   steps_per_sample: 64
   damage_class_weight: 25.0
