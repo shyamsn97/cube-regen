@@ -6,7 +6,6 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 from huggingface_hub import HfApi
-from tqdm import tqdm
 
 from regen.base_trainer import BaseNCA3DTrainer
 
@@ -25,11 +24,21 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
         steps_per_sample: int = 96,
         damage_loss_weight: float = 1.0,
         class_loss_weight: float = 1.0,
+        damage_class_weight: float = 1.0,
+        damage_loss_type: str = "cross_entropy",
+        focal_gamma: float = 2.0,
         buffer_size: int = 1000,
         buffer_sampling_prob: float = 0.5,
         grad_clip: float = 1.0,
         gradient_checkpointing: bool = False,
         device=None,
+        wandb_project: Optional[str] = "nca-3d-combined",
+        wandb_run_name: Optional[str] = None,
+        wandb_watch: bool = True,
+        wandb_watch_log: str = "all",
+        wandb_watch_log_freq: int = 100,
+        wandb_log_gradient_sums: bool = True,
+        wandb_gradient_log_freq: int = 1,
         checkpoint_dir: str = "./combined_nca_models",
         num_workers: int = 0,
         validate_frequency: int = 1,
@@ -49,9 +58,49 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
             device=device,
             grad_clip=grad_clip,
             gradient_checkpointing=gradient_checkpointing,
+            wandb_project=wandb_project,
+            wandb_run_name=wandb_run_name,
+            wandb_config={
+                "trainer": "CombinedNCA3DTrainer",
+                "optimizer": "Adam",
+                "learning_rate": lr,
+                "batch_size": batch_size,
+                "iterations_per_epoch": iterations_per_epoch,
+                "steps_per_sample": steps_per_sample,
+                "buffer_size": buffer_size,
+                "buffer_sampling_prob": buffer_sampling_prob,
+                "grad_clip": grad_clip,
+                "gradient_checkpointing": gradient_checkpointing,
+                "wandb_watch": wandb_watch,
+                "wandb_watch_log": wandb_watch_log,
+                "wandb_watch_log_freq": wandb_watch_log_freq,
+                "wandb_log_gradient_sums": wandb_log_gradient_sums,
+                "wandb_gradient_log_freq": wandb_gradient_log_freq,
+                "damage_loss_weight": damage_loss_weight,
+                "class_loss_weight": class_loss_weight,
+                "damage_class_weight": damage_class_weight,
+                "damage_loss_type": damage_loss_type,
+                "focal_gamma": focal_gamma,
+                "model": model.get_config(),
+                "train_dataset_size": len(train_dataset),
+                "val_dataset_size": len(val_dataset) if val_dataset is not None else 0,
+                "num_workers": num_workers,
+                "validate_frequency": validate_frequency,
+                "checkpoint_dir": checkpoint_dir,
+                "repo_id": repo_id,
+                "repo_type": repo_type,
+            },
+            wandb_watch=wandb_watch,
+            wandb_watch_log=wandb_watch_log,
+            wandb_watch_log_freq=wandb_watch_log_freq,
+            wandb_log_gradient_sums=wandb_log_gradient_sums,
+            wandb_gradient_log_freq=wandb_gradient_log_freq,
         )
         self.damage_loss_weight = damage_loss_weight
         self.class_loss_weight = class_loss_weight
+        self.damage_class_weight = damage_class_weight
+        self.damage_loss_type = damage_loss_type
+        self.focal_gamma = focal_gamma
         self.checkpoint_dir = checkpoint_dir
         self.best_val_loss = float("inf")
         self.validate_frequency = validate_frequency
@@ -61,6 +110,7 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
         self.val_losses = []
 
         damage_weights = torch.ones(self.model.num_damage_directions)
+        damage_weights[1:] = damage_class_weight
         self.damage_loss_fn = nn.CrossEntropyLoss(
             weight=damage_weights.to(self.device), reduction="none"
         )
@@ -71,15 +121,17 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
 
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-    def loss_function(self, final_state, damage_directions, labels):
+    def loss_and_metrics(self, final_state, damage_directions, labels):
         damage_logits = self.model.damage_logits(final_state)
         class_logits = self.model.class_logits(final_state)
 
-        damage_loss = self.masked_cross_entropy(
+        damage_loss = self.masked_damage_loss(
             self.damage_loss_fn,
             damage_logits,
             damage_directions,
             final_state,
+            loss_type=self.damage_loss_type,
+            focal_gamma=self.focal_gamma,
         )
 
         class_loss = self.class_loss_fn(class_logits, labels)
@@ -106,69 +158,44 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
             )
             class_accuracy = (class_predictions == labels).float().mean()
 
-        return loss, {
+        metrics = {
             "loss": loss.detach(),
             "damage_loss": damage_loss.detach(),
             "class_loss": class_loss.detach(),
+            "full_accuracy": damage_accuracy.detach(),
             "damage_accuracy": damage_accuracy.detach(),
             "damaged_accuracy": damaged_accuracy.detach(),
+            "damage_boundary_accuracy": damaged_accuracy.detach(),
             "class_accuracy": class_accuracy.detach(),
         }
-
-    def train_epoch(self, epoch: int) -> Dict[str, float]:
-        self.model.train()
-        totals = {}
-        batch_count = 0
-        iterations = self.iterations_per_epoch or len(self.train_loader)
-
-        pbar = tqdm(range(iterations), desc=f"Epoch {epoch}")
-        for _ in pbar:
-            use_buffer = self.should_use_replay_buffer()
-
-            if use_buffer:
-                sampled = self.sample_replay_buffer()
-                if sampled is None:
-                    use_buffer = False
-                else:
-                    states, damage_directions, labels = sampled
-
-            if not use_buffer:
-                structures, damage_directions, labels = self.prepare_damage_batch(
-                    self.next_train_batch()
-                )
-                states = self.model.initialize(structures)
-
-            final_state, states_history = self.run_nca(states)
-
-            if not use_buffer:
-                self.add_replay_states(
-                    states_history,
+        metrics.update(
+            {
+                key: value.detach()
+                for key, value in self.damage_diagnostics(
+                    damage_logits,
                     damage_directions,
-                    labels,
-                )
+                    final_state,
+                ).items()
+            }
+        )
+        return loss, metrics
 
-            loss, metrics = self.loss_function(
-                final_state,
-                damage_directions,
-                labels,
-            )
+    def loss_function(self, final_state, damage_directions, labels):
+        return self.loss_and_metrics(final_state, damage_directions, labels)
 
-            self.optimizer_step(loss)
+    def log_train_step_metrics(self, metrics, step):
+        self.log_wandb(
+            {f"train_step/{key}": value for key, value in metrics.items()},
+            step=step,
+        )
 
-            batch_count += 1
-            for key, value in metrics.items():
-                totals[key] = totals.get(key, 0.0) + value.item()
-
-            averages = {key: value / batch_count for key, value in totals.items()}
-            pbar.set_postfix(
-                {
-                    "loss": f"{averages['loss']:.4f}",
-                    "dmg_acc": f"{averages['damage_accuracy']:.3f}",
-                    "cls_acc": f"{averages['class_accuracy']:.3f}",
-                }
-            )
-
-        return {key: value / batch_count for key, value in totals.items()}
+    def progress_postfix(self, averages):
+        return {
+            "loss": f"{averages.get('loss', 0.0):.4f}",
+            "full_acc": f"{averages.get('damage_accuracy', 0.0):.3f}",
+            "dmg_acc": f"{averages.get('damaged_accuracy', 0.0):.3f}",
+            "cls_acc": f"{averages.get('class_accuracy', 0.0):.3f}",
+        }
 
     @torch.no_grad()
     def validate(self) -> Optional[Dict[str, float]]:
@@ -293,6 +320,7 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
     ):
         del visualization_frequency
 
+        self.init_wandb()
         for epoch in range(epochs):
             start = time.time()
             train_metrics = self.train_epoch(epoch)
@@ -321,19 +349,28 @@ class CombinedNCA3DTrainer(BaseNCA3DTrainer):
             log_parts = [
                 f"Epoch {epoch}",
                 f"train_loss={train_metrics['loss']:.4f}",
-                f"train_damage_acc={train_metrics['damage_accuracy']:.3f}",
+                f"train_full_acc={train_metrics['damage_accuracy']:.3f}",
+                f"train_damage_acc={train_metrics['damaged_accuracy']:.3f}",
                 f"train_class_acc={train_metrics['class_accuracy']:.3f}",
             ]
             if val_metrics is not None:
                 log_parts.extend(
                     [
                         f"val_loss={val_metrics['loss']:.4f}",
-                        f"val_damage_acc={val_metrics['damage_accuracy']:.3f}",
+                        f"val_full_acc={val_metrics['damage_accuracy']:.3f}",
+                        f"val_damage_acc={val_metrics['damaged_accuracy']:.3f}",
                         f"val_class_acc={val_metrics['class_accuracy']:.3f}",
                     ]
                 )
             log_parts.append(f"time={elapsed:.1f}s")
             print(" | ".join(log_parts))
+
+            wandb_metrics = {
+                "epoch": epoch,
+                "epoch_time": elapsed,
+                **metrics,
+            }
+            self.log_wandb(wandb_metrics, step=self.global_step)
 
             should_save = save_frequency > 0 and (
                 epoch % save_frequency == 0 or epoch == epochs - 1

@@ -3,7 +3,9 @@
 	train-damage-shapenet train-damage-shapenet-modal train-combined-shapenet \
 	train-combined-shapenet-modal shapenet-volume-create shapenet-volume-ls \
 	shapenet-volume-upload shapenet-volume-download shapenet-volume-ls-data \
-	shapenet-subset-download shapenet-damage-subset-download
+	shapenet-subset-download shapenet-damage-subset-download \
+	visualize-shapenet-predictions visualize-damage-prediction \
+	visualize-sakana-damage train-sakana train-sakana-modal
 .DEFAULT_GOAL := help
 
 define BROWSER_PYSCRIPT
@@ -31,6 +33,7 @@ PYTHON ?= python
 TRAIN_SCRIPT ?= scripts/train.py
 SHAPENET_SUBSET_DOWNLOAD_SCRIPT ?= scripts/download_shapenet_subset.py
 SHAPENET_DOWNLOAD_SCRIPT ?= scripts/download_shapenet_volume.py
+INFERENCE_SCRIPT ?= scripts/inference.py
 CONFIG ?= configs/train_combined.yaml
 MODAL_CONFIG ?= configs/train_combined_modal.yaml
 DAMAGE_CONFIG ?= configs/train_damage.yaml
@@ -46,6 +49,23 @@ SHAPENET_LOCAL_DIR ?= data/shapenet_voxels
 SHAPENET_REMOTE_DIR ?= /
 SHAPENET_REMOTE_PATH ?= /shapenet_voxels
 SHAPENET_DOWNLOAD_DIR ?= data
+SHAPENET_PREDICTION_REPO ?= shyamsn97/shapenet-cube-regen-combined-48
+SHAPENET_PREDICTION_CHECKPOINT ?= combined_latest.pt
+SHAPENET_PREDICTION_OUTPUT ?= examples/shapenet_predictions
+SHAPENET_PREDICTION_SAMPLES ?= 10
+DAMAGE_INFERENCE_REPO ?= shyamsn97/cube-regen-damage-detection
+DAMAGE_INFERENCE_OUTPUT ?= examples/damage_prediction.png
+DAMAGE_INFERENCE_STEPS ?= 128
+SAKANA_TRAIN_SCRIPT ?= examples/sakana/train_sakana_damage.py
+SAKANA_INFERENCE_SCRIPT ?= examples/sakana/infer_sakana_damage.py
+SAKANA_REPO ?= shyamsn97/sakana-cube-regen-damage-detection
+SAKANA_INFERENCE_OUTPUT ?= examples/sakana/outputs/inference
+SAKANA_INFERENCE_STEPS ?= 96
+SAKANA_RECOVERY_OUTPUT ?= sakana_damage_recovery.gif
+SAKANA_RECOVERY_DAMAGE_TYPE ?= sphere
+SAKANA_RECOVERY_RADIUS ?= 3
+SAKANA_RECOVERY_CENTER_FRACTIONS ?= 0.25 0.5 0.75
+SAKANA_RECOVERY_ITERATIONS ?= 24
 
 help: ## show this help message
 	@python -c "$$PRINT_HELP_PYSCRIPT" < $(MAKEFILE_LIST)
@@ -139,6 +159,41 @@ shapenet-damage-subset-download: ## download sampled ShapeNet files for damage t
 		--output-root $(SHAPENET_LOCAL_DIR) \
 		--force
 
+visualize-shapenet-predictions: shapenet-subset-download ## render ShapeNet prediction rows from the combined HF model
+	$(PYTHON) $(INFERENCE_SCRIPT) \
+		--mode shapenet-combined \
+		--repo-id $(SHAPENET_PREDICTION_REPO) \
+		--checkpoint $(SHAPENET_PREDICTION_CHECKPOINT) \
+		--config $(COMBINED_SHAPENET_MODAL_CONFIG) \
+		--data-root $(SHAPENET_LOCAL_DIR) \
+		--output-dir $(SHAPENET_PREDICTION_OUTPUT) \
+		--num-samples $(SHAPENET_PREDICTION_SAMPLES)
+
+visualize-damage-prediction: ## render pure damage-detection inference from the HF model
+	$(PYTHON) $(INFERENCE_SCRIPT) \
+		--mode legacy-damage \
+		--repo-id $(DAMAGE_INFERENCE_REPO) \
+		--output $(DAMAGE_INFERENCE_OUTPUT) \
+		--steps $(DAMAGE_INFERENCE_STEPS)
+
+visualize-sakana-damage: ## render Sakana sphere/cube damage inference rows
+	$(PYTHON) $(SAKANA_INFERENCE_SCRIPT) \
+		--repo-id $(SAKANA_REPO) \
+		--output-dir $(SAKANA_INFERENCE_OUTPUT) \
+		--steps $(SAKANA_INFERENCE_STEPS)
+
+visualize-sakana-recovery-gif: ## render iterative Sakana predicted recovery GIF
+	$(PYTHON) $(SAKANA_INFERENCE_SCRIPT) \
+		--repo-id $(SAKANA_REPO) \
+		--output-dir $(SAKANA_INFERENCE_OUTPUT) \
+		--steps $(SAKANA_INFERENCE_STEPS) \
+		--recovery-gif \
+		--recovery-output $(SAKANA_RECOVERY_OUTPUT) \
+		--recovery-damage-type $(SAKANA_RECOVERY_DAMAGE_TYPE) \
+		--recovery-radius $(SAKANA_RECOVERY_RADIUS) \
+		--recovery-center-fractions $(SAKANA_RECOVERY_CENTER_FRACTIONS) \
+		--recovery-iterations $(SAKANA_RECOVERY_ITERATIONS)
+
 train: ## train with CONFIG=configs/train_combined.yaml (override CONFIG=...)
 	$(PYTHON) $(TRAIN_SCRIPT) --config $(CONFIG)
 
@@ -174,3 +229,9 @@ train-combined-shapenet-modal: ## download/upload sampled ShapeNet subset, then 
 	$(MAKE) shapenet-volume-create
 	$(MAKE) shapenet-volume-upload
 	$(PYTHON) $(TRAIN_SCRIPT) --config $(COMBINED_SHAPENET_MODAL_CONFIG)
+
+train-sakana: ## train the Sakana damage example locally
+	$(PYTHON) $(SAKANA_TRAIN_SCRIPT)
+
+train-sakana-modal: ## train the Sakana damage example on Modal
+	$(PYTHON) $(SAKANA_TRAIN_SCRIPT) --mode modal --repo-id $(SAKANA_REPO)

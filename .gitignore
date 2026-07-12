@@ -59,3 +59,4 @@ mlruns/*
 */**/wandb/*
 data/*
 .DS_Store
+*/**/docs/internal/*

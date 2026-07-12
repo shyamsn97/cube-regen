@@ -8,7 +8,6 @@ import torch.nn as nn
 # Combine images side by side
 from PIL import Image
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from regen.base_trainer import BaseNCA3DTrainer, ReplayBuffer
 from regen.model import save_weights_to_huggingface
@@ -30,7 +29,17 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         buffer_sampling_prob=0.5,
         grad_clip=1.0,
         gradient_checkpointing=False,
+        damage_class_weight=1.0,
+        damage_loss_type="cross_entropy",
+        focal_gamma=2.0,
         device=None,
+        wandb_project="nca-3d-damage-detection",
+        wandb_run_name=None,
+        wandb_watch=True,
+        wandb_watch_log="all",
+        wandb_watch_log_freq=100,
+        wandb_log_gradient_sums=True,
+        wandb_gradient_log_freq=1,
         save_dir="./nca_models",
         repo_id="shyamsn97/cube",
         repo_type="model",
@@ -64,13 +73,44 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             device=device,
             grad_clip=grad_clip,
             gradient_checkpointing=gradient_checkpointing,
+            wandb_project=wandb_project,
+            wandb_run_name=wandb_run_name,
+            wandb_config={
+                "trainer": "NCA3DTrainer",
+                "optimizer": "Adam",
+                "learning_rate": lr,
+                "batch_size": batch_size,
+                "iterations_per_epoch": iterations_per_epoch,
+                "steps_per_sample": steps_per_sample,
+                "buffer_size": buffer_size,
+                "buffer_sampling_prob": buffer_sampling_prob,
+                "grad_clip": grad_clip,
+                "gradient_checkpointing": gradient_checkpointing,
+                "damage_class_weight": damage_class_weight,
+                "damage_loss_type": damage_loss_type,
+                "focal_gamma": focal_gamma,
+                "model": model.get_config(),
+                "dataset_size": len(dataset),
+                "save_dir": save_dir,
+                "repo_id": repo_id,
+                "repo_type": repo_type,
+                "model_repo_id": model_repo_id,
+            },
+            wandb_watch=wandb_watch,
+            wandb_watch_log=wandb_watch_log,
+            wandb_watch_log_freq=wandb_watch_log_freq,
+            wandb_log_gradient_sums=wandb_log_gradient_sums,
+            wandb_gradient_log_freq=wandb_gradient_log_freq,
         )
         self.save_dir = save_dir
+        self.damage_class_weight = damage_class_weight
+        self.damage_loss_type = damage_loss_type
+        self.focal_gamma = focal_gamma
 
         # Initialize loss function (ignore predictions for "dead" cells)
         # Use class weights to emphasize damage indices (1-6) more than no-damage (0)
         damage_weights = torch.ones(self.model.num_damage_directions)
-        damage_weights[1:] = 1.0  # Higher weight for damage indices (1-6)
+        damage_weights[1:] = damage_class_weight
         self.loss_fn = nn.CrossEntropyLoss(
             weight=damage_weights.to(self.device), reduction="none"
         )
@@ -100,11 +140,13 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         Returns:
             loss: Mean loss over alive cells
         """
-        masked_loss = self.masked_cross_entropy(
+        masked_loss = self.masked_damage_loss(
             self.loss_fn,
             predictions,
             targets,
             final_state,
+            loss_type=self.damage_loss_type,
+            focal_gamma=self.focal_gamma,
         )
 
         if not self.model.use_tanh:
@@ -112,79 +154,54 @@ class NCA3DTrainer(BaseNCA3DTrainer):
 
         return masked_loss
 
-    def train_epoch(self, epoch):
-        """Run a single training epoch."""
-        self.model.train()
-        epoch_loss = 0
-        batch_count = 0
+    def replay_samples_per_fresh_batch(self):
+        return 2
 
-        pbar = tqdm(range(self.iterations_per_epoch), desc=f"Epoch {epoch}")
-        for _ in pbar:
-            # Decide whether to sample from buffer or use fresh samples
-            use_buffer = self.should_use_replay_buffer()
-
-            if use_buffer:
-                # Sample from replay buffer
-                sampled = self.sample_replay_buffer()
-                if sampled is None:
-                    use_buffer = False
-                else:
-                    states, damage_directions, labels = sampled
-
-            if not use_buffer:
-                # Get a fresh batch from the dataset
-                structures, damage_directions, labels = self.prepare_damage_batch(
-                    self.next_train_batch()
-                )
-                # Initialize states from structures
-                states = self.model.initialize(structures)
-
-            # Run NCA for several steps
-            final_state, states_history = self.run_nca(states, labels)
-
-            # Add some intermediate states to the replay buffer
-            if not use_buffer:  # Only add if we're not already using buffer samples
-                # Add some random intermediate states to buffer
-                self.add_replay_states(
-                    states_history,
+    def loss_and_metrics(self, final_state, damage_directions, labels):
+        del labels
+        predictions = self.model.classify(final_state)
+        loss = self.loss_function(
+            predictions,
+            damage_directions,
+            final_state,
+        )
+        accuracy = self.damage_accuracy(predictions, damage_directions, final_state)
+        damaged_accuracy = self.damaged_accuracy(
+            predictions,
+            damage_directions,
+            final_state,
+        )
+        metrics = {
+            "loss": loss.detach(),
+            "full_accuracy": accuracy.detach(),
+            "damage_accuracy": accuracy.detach(),
+            "damaged_accuracy": damaged_accuracy.detach(),
+            "damage_boundary_accuracy": damaged_accuracy.detach(),
+        }
+        metrics.update(
+            {
+                key: value.detach()
+                for key, value in self.damage_diagnostics(
+                    predictions,
                     damage_directions,
-                    labels,
-                    num_samples=2,
-                )
+                    final_state,
+                ).items()
+            }
+        )
+        return loss, metrics
 
-            # Get predictions from final state
-            predictions = self.model.classify(final_state)
+    def log_train_step_metrics(self, metrics, step):
+        self.log_wandb(
+            {f"train_step/{key}": value for key, value in metrics.items()},
+            step=step,
+        )
 
-            # Calculate loss using alive pixels
-            # Apply higher weight to actual damage areas
-            # damage_mask = (damage_directions > 0).float()
-            # weights = 1.0 + damage_mask * 0.5  # 1.5x weight for actual damage areas
-
-            loss = self.loss_function(
-                predictions,
-                damage_directions,
-                final_state,
-            )
-
-            # Backpropagation
-            self.optimizer_step(loss)
-
-            # Update metrics
-            epoch_loss += loss.item()
-            batch_count += 1
-
-            # Calculate accuracy
-            accuracy = self.damage_accuracy(predictions, damage_directions, final_state)
-
-            # Update progress bar with loss and accuracy
-            batch_epoch_loss = epoch_loss / batch_count
-            pbar.set_postfix(
-                {
-                    "loss": f"{batch_epoch_loss:.4f}",
-                    "acc": f"{accuracy.item():.4f}",
-                }
-            )
-        return batch_epoch_loss
+    def progress_postfix(self, averages):
+        return {
+            "loss": f"{averages.get('loss', 0.0):.4f}",
+            "acc": f"{averages.get('full_accuracy', 0.0):.4f}",
+            "dmg_acc": f"{averages.get('damaged_accuracy', 0.0):.4f}",
+        }
 
     def save_model(self, epoch, loss):
         """Save the model checkpoint."""
@@ -217,34 +234,25 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             save_frequency: How often to save model checkpoints
             visualization_frequency: How often to visualize results
         """
-        if not hasattr(self, "wandb_initialized"):
-            import wandb
-            from torch.utils.tensorboard import SummaryWriter
+        from torch.utils.tensorboard import SummaryWriter
 
-            wandb.init(
-                project="nca-3d-damage-detection",
-                config={
-                    "batch_size": self.batch_size,
-                    "learning_rate": self.optimizer.param_groups[0]["lr"],
-                    "steps_per_sample": self.steps_per_sample,
-                    "buffer_size": self.replay_buffer.buffer.maxlen,
-                    "buffer_sampling_prob": self.buffer_sampling_prob,
-                },
-            )
-            self.wandb_initialized = True
-            self.writer = SummaryWriter(log_dir=f"{self.save_dir}/tensorboard")
+        self.init_wandb()
+        self.writer = SummaryWriter(log_dir=f"{self.save_dir}/tensorboard")
 
         for epoch in range(epochs):
             start_time = time.time()
 
             # Training
-            train_loss = self.train_epoch(epoch)
+            train_metrics = self.train_epoch(epoch)
+            train_loss = train_metrics["loss"]
             self.train_losses.append(train_loss)
 
             # Calculate accuracy
             self.model.eval()
             correct = 0
             total = 0
+            damaged_correct = 0
+            damaged_total = 0
             with torch.no_grad():
                 for batch in DataLoader(self.dataset, batch_size=self.batch_size):
                     damage_mask, damage_direction, label = self.prepare_damage_batch(
@@ -261,26 +269,58 @@ class NCA3DTrainer(BaseNCA3DTrainer):
                     # Calculate accuracy
                     total += damage_direction.numel()
                     correct += (predicted_labels == damage_direction).sum().item()
+                    damaged_mask = damage_direction > 0
+                    damaged_total += damaged_mask.sum().item()
+                    damaged_correct += (
+                        ((predicted_labels == damage_direction) & damaged_mask)
+                        .sum()
+                        .item()
+                    )
 
             accuracy = 100 * correct / total
+            damaged_accuracy = (
+                100 * damaged_correct / damaged_total if damaged_total > 0 else 0.0
+            )
             self.model.train()
 
             print(
-                f"Epoch {epoch} - Train Loss: {train_loss:.4f}, Accuracy: {accuracy:.2f}%, Time: {time.time() - start_time:.2f}s"
+                f"Epoch {epoch} - Train Loss: {train_loss:.4f}, "
+                f"Train Alive Acc: {train_metrics.get('damage_accuracy', 0.0):.4f}, "
+                f"Train Damaged Acc: {train_metrics.get('damaged_accuracy', 0.0):.4f}, "
+                f"Eval Accuracy: {accuracy:.2f}%, "
+                f"Eval Damaged Accuracy: {damaged_accuracy:.2f}%, "
+                f"Time: {time.time() - start_time:.2f}s"
             )
-            # Log metrics to wandb
-            wandb.log(
+            # Log metrics to Weights & Biases
+            self.log_wandb(
                 {
                     "epoch": epoch,
                     "train_loss": train_loss,
+                    "train_alive_accuracy": train_metrics.get("damage_accuracy", 0.0),
+                    "train_damaged_accuracy": train_metrics.get(
+                        "damaged_accuracy", 0.0
+                    ),
                     "accuracy": accuracy,
+                    "damaged_accuracy": damaged_accuracy,
                     "epoch_time": time.time() - start_time,
-                }
+                },
+                step=self.global_step,
             )
 
             # Log metrics to tensorboard
             self.writer.add_scalar("Loss/train", train_loss, epoch)
+            self.writer.add_scalar(
+                "Accuracy/train_alive",
+                train_metrics.get("damage_accuracy", 0.0),
+                epoch,
+            )
+            self.writer.add_scalar(
+                "Accuracy/train_damaged",
+                train_metrics.get("damaged_accuracy", 0.0),
+                epoch,
+            )
             self.writer.add_scalar("Accuracy/train", accuracy, epoch)
+            self.writer.add_scalar("Accuracy/damaged", damaged_accuracy, epoch)
             self.writer.add_scalar("Time/epoch", time.time() - start_time, epoch)
 
             # Save model
@@ -295,7 +335,11 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             # Visualize results
             if epoch % visualization_frequency == 0 or epoch == epochs - 1:
                 img = self.visualize_results(epoch)
-                wandb.log({"visualization": wandb.Image(img), "epoch": epoch})
+                if self.wandb_initialized:
+                    self.log_wandb(
+                        {"visualization": self.wandb.Image(img), "epoch": epoch},
+                        step=self.global_step,
+                    )
                 self.writer.add_image(
                     "Visualization", np.array(img), epoch, dataformats="HWC"
                 )
@@ -324,9 +368,6 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             # Get final predictions
             predictions = self.model.classify(state)
             predictions = torch.argmax(predictions, dim=-1).detach().cpu().numpy()[0]
-            print(predictions.shape)
-            print(damage_mask_tensor.detach().cpu().numpy().shape)
-            print(damage_direction_tensor.detach().cpu().numpy().shape)
 
             # Convert tensors to numpy arrays and ensure they're properly shaped
             damage_mask = (

@@ -21,6 +21,9 @@ class DynamicDamageDataset(Dataset):
         damage_radius_range: Tuple[int, int] = (1, 3),
         damage_types: List[str] = ["sphere", "cube", "random"],
         random_proportion_range: Tuple[float, float] = (0.1, 0.25),
+        num_damage_sites_range: Tuple[int, int] = (1, 1),
+        min_damage_target_cells: int = 0,
+        max_damage_attempts: int = 1,
         fixed_damage: bool = False,
         augment_rotations: bool = False,
         return_damage_mask: bool = False,
@@ -37,6 +40,9 @@ class DynamicDamageDataset(Dataset):
             damage_radius_range: Range (min, max) for damage radius
             damage_types: List of damage types to sample from ("sphere", "cube", "random")
             random_proportion_range: Range (min, max) for random damage proportion
+            num_damage_sites_range: Range (min, max) for damage sites per sample
+            min_damage_target_cells: Retry until at least this many nonzero target cells
+            max_damage_attempts: Maximum attempts when enforcing min_damage_target_cells
             fixed_damage: If True, damage is applied once per sample and reused
             augment_rotations: If True, apply random 90-degree rotations as augmentation
             return_damage_mask: If True, also return the mask showing where damage was applied
@@ -52,6 +58,9 @@ class DynamicDamageDataset(Dataset):
         self.damage_radius_range = damage_radius_range
         self.damage_types = damage_types
         self.random_proportion_range = random_proportion_range
+        self.num_damage_sites_range = num_damage_sites_range
+        self.min_damage_target_cells = min_damage_target_cells
+        self.max_damage_attempts = max_damage_attempts
         self.fixed_damage = fixed_damage
         self.augment_rotations = augment_rotations
         self.return_damage_mask = return_damage_mask
@@ -69,6 +78,15 @@ class DynamicDamageDataset(Dataset):
 
         if not (0 <= min(random_proportion_range) <= max(random_proportion_range) <= 1):
             raise ValueError("Random proportion range must be between 0 and 1")
+
+        if min(num_damage_sites_range) < 1:
+            raise ValueError("Minimum number of damage sites must be at least 1")
+
+        if min_damage_target_cells < 0:
+            raise ValueError("min_damage_target_cells must be non-negative")
+
+        if max_damage_attempts < 1:
+            raise ValueError("max_damage_attempts must be at least 1")
 
         # Set random seed if provided
         if seed is not None:
@@ -128,24 +146,57 @@ class DynamicDamageDataset(Dataset):
 
     def _generate_damage(self, shape, damage_type=None):
         """Generate a random damage pattern for a shape."""
-        # Choose damage parameters
-        radius = random.randint(*self.damage_radius_range)
-        if damage_type is None:
-            damage_type = random.choice(self.damage_types)
+        best_live_mask = None
+        best_damage_direction = None
+        best_target_count = -1
 
-        random_proportion = None
-        if damage_type == "random":
-            random_proportion = random.uniform(*self.random_proportion_range)
+        for _ in range(self.max_damage_attempts):
+            new_live_mask, damage_direction = self._generate_damage_once(
+                shape,
+                damage_type=damage_type,
+            )
+            target_count = int(np.count_nonzero(damage_direction))
 
-        # Apply damage
-        new_live_mask, damage_direction = apply_damage(
-            shape.copy(),
-            radius=radius,
-            damage_type=damage_type,
-            random_proportion=random_proportion,
+            if target_count > best_target_count:
+                best_live_mask = new_live_mask
+                best_damage_direction = damage_direction
+                best_target_count = target_count
+
+            if target_count >= self.min_damage_target_cells:
+                return new_live_mask, damage_direction
+
+        return best_live_mask, best_damage_direction
+
+    def _generate_damage_once(self, shape, damage_type=None):
+        """Generate one damage sample, possibly with multiple damage sites."""
+        current_live_mask = shape.copy()
+        combined_damage_direction = np.zeros_like(shape)
+        num_sites = random.randint(*self.num_damage_sites_range)
+
+        for _ in range(num_sites):
+            site_damage_type = damage_type or random.choice(self.damage_types)
+            random_proportion = None
+            if site_damage_type == "random":
+                random_proportion = random.uniform(*self.random_proportion_range)
+
+            current_live_mask, site_damage_direction = apply_damage(
+                current_live_mask.copy(),
+                radius=random.randint(*self.damage_radius_range),
+                damage_type=site_damage_type,
+                random_proportion=random_proportion,
+            )
+            combined_damage_direction = np.where(
+                site_damage_direction > 0,
+                site_damage_direction,
+                combined_damage_direction,
+            )
+
+        combined_damage_direction = np.where(
+            current_live_mask == 1,
+            combined_damage_direction,
+            0,
         )
-
-        return new_live_mask, damage_direction
+        return current_live_mask, combined_damage_direction
 
     def _apply_random_rotation(self, shape, damage_direction):
         """Apply a random 90-degree rotation to both shape and damage_direction arrays."""

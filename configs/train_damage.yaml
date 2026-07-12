@@ -6,8 +6,10 @@ dataset:
   shapes_path: data/xdata_7class.npy
   labels_path: data/ydata_7class.npy
   damage_radius_range: [1, 3]
-  damage_types: [sphere, cube, random]
-  random_proportion_range: [0.1, 0.2]
+  damage_types: [sphere, cube]
+  num_damage_sites_range: [1, 2]
+  min_damage_target_cells: 8
+  max_damage_attempts: 10
   augment_rotations: false
   fixed_damage: false
   filter_label: 3
@@ -21,11 +23,14 @@ model:
 training:
   epochs: 500
   batch_size: 8
-  lr: 0.00002
+  lr: 0.0005
   iterations_per_epoch: 100
   steps_per_sample: 96
+  damage_class_weight: 25.0
+  damage_loss_type: cross_entropy
+  focal_gamma: 2.0
   buffer_size: 1000
-  buffer_sampling_prob: 0.5
+  buffer_sampling_prob: 0.2
 output:
   save_dir: nca_models
   save_frequency: 10
