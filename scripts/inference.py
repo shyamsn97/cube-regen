@@ -8,7 +8,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 import numpy as np
 import torch
-from huggingface_hub import hf_hub_download
 from PIL import Image, ImageDraw, ImageFont
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,120 +15,82 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from regen.dataset import DynamicDamageDataset
-from regen.model import (
-    create_model_from_config,
-    load_config_from_json,
-    load_weights_from_huggingface,
-)
+from regen.device import preferred_device
+from regen.model import CellRecoveryModel
 from regen.train_config import load_config, load_training_data
 from regen.utils import plot_voxels
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description=(
-            "Run inference and render prediction images. The default mode renders "
-            "ShapeNet combined-model rows: Image | Damage (no class) | Predicted | True."
-        )
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["shapenet-combined", "legacy-damage"],
-        default="shapenet-combined",
+        description="Render damage prediction rows from a pretrained CellRecoveryModel."
     )
     parser.add_argument(
         "--repo-id",
-        default=None,
-        help="Hugging Face model repo. Defaults depend on --mode.",
+        default="shyamsn97/shapenet-cube-regen-combined-hdim-48",
+        help="Hugging Face repo id or local pretrained model directory.",
     )
     parser.add_argument(
-        "--checkpoint",
-        default="combined_latest.pt",
-        help="Checkpoint filename in the HF repo.",
+        "--weights-filename",
+        default="pytorch_model.pt",
+        help="Weights filename inside the pretrained model repo/directory.",
     )
     parser.add_argument(
         "--config",
         default="configs/train_shapenet_modal.yaml",
-        help="YAML config used for data sampling and damage settings.",
+        help="Training YAML used only for data sampling and damage settings.",
     )
     parser.add_argument(
         "--data-root",
         default=None,
-        help="Local ShapeNet voxel root. Defaults to config root, or data/shapenet_voxels for Modal configs.",
+        help="Local ShapeNet root override for ShapeNet configs.",
     )
-    parser.add_argument("--output-dir", default="examples/shapenet_predictions")
-    parser.add_argument("--output", default="combined_img.png")
+    parser.add_argument("--output-dir", default="examples/predictions")
     parser.add_argument("--num-samples", type=int, default=10)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Device override. Defaults to cuda, then mps, then cpu.",
+    )
     parser.add_argument("--image-size", type=int, default=6)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    if args.mode == "legacy-damage":
-        legacy_damage_inference(
-            model_repo_id=(
-                args.repo_id or "shyamsn97/table-cube-regen-damage-detection-20"
-            ),
-            output_path=args.output,
-            steps=args.steps or 128,
-        )
-        return
-
-    shapenet_combined_inference(args)
-
-
-def shapenet_combined_inference(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device(
-        args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    )
-    config = load_config(args.config)
-    config = with_local_data_root(config, args.data_root)
-
+    device = preferred_device(args.device)
+    config = with_local_data_root(load_config(args.config), args.data_root)
     seed = args.seed if args.seed is not None else config.get("seed", 0)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    repo_id = args.repo_id or "shyamsn97/shapenet-cube-regen-combined-48"
-    model = load_combined_model(repo_id, args.checkpoint, device)
-    model.eval()
+    model = CellRecoveryModel.from_pretrained(
+        args.repo_id,
+        device=device,
+        filename=args.weights_filename,
+        token=os.environ.get("HF_TOKEN"),
+    )
+    print(f"Loaded pretrained model: {args.repo_id} on {device}")
 
     shapes, labels, class_to_idx = load_training_data(config)
     idx_to_class = {idx: name for name, idx in (class_to_idx or {}).items()}
-    dataset_config = config.get("dataset", {})
-    dataset = DynamicDamageDataset(
-        shapes=shapes,
-        labels=labels.tolist(),
-        damage_radius_range=tuple(dataset_config.get("damage_radius_range", [1, 3])),
-        damage_types=dataset_config.get("damage_types", ["sphere", "cube", "random"]),
-        random_proportion_range=tuple(
-            dataset_config.get("random_proportion_range", [0.1, 0.2])
-        ),
-        fixed_damage=True,
-        augment_rotations=dataset_config.get("augment_rotations", False),
-        return_damage_mask=True,
-        seed=seed,
-    )
+    dataset = make_dataset(config, shapes, labels, seed)
+    steps = args.steps or config.get("training", {}).get("max_steps_per_sample", 128)
 
-    steps = args.steps or config.get("training", {}).get("steps_per_sample", 64)
-    sample_count = min(args.num_samples, len(dataset))
     saved_paths = []
-
-    for idx in range(sample_count):
+    for idx in range(min(args.num_samples, len(dataset))):
         saved_paths.append(
-            render_shapenet_sample(
+            render_sample(
                 model=model,
                 dataset=dataset,
                 sample_idx=idx,
                 idx_to_class=idx_to_class,
                 steps=steps,
-                device=device,
                 output_dir=output_dir,
                 image_size=args.image_size,
             )
@@ -143,7 +104,6 @@ def shapenet_combined_inference(args):
 def with_local_data_root(config, data_root):
     config = copy.deepcopy(config)
     dataset_config = config.setdefault("dataset", {})
-
     if data_root:
         dataset_config["root"] = data_root
         return config
@@ -152,74 +112,80 @@ def with_local_data_root(config, data_root):
     if configured_root.exists():
         return config
 
-    local_root = Path("data/shapenet_voxels")
+    local_root = PROJECT_ROOT / "data" / "shapenet_voxels"
     if local_root.exists():
         dataset_config["root"] = str(local_root)
         return config
 
-    raise FileNotFoundError(
-        "Could not find ShapeNet voxel data. Pass --data-root, or run "
-        "`make shapenet-subset-download` to create data/shapenet_voxels."
+    if dataset_config.get("source", "npy") == "shapenet":
+        raise FileNotFoundError(
+            "Could not find ShapeNet voxel data. Pass --data-root, or run "
+            "`make shapenet-subset-download` to create data/shapenet_voxels."
+        )
+    return config
+
+
+def make_dataset(config, shapes, labels, seed):
+    dataset_config = config.get("dataset", {})
+    return DynamicDamageDataset(
+        shapes=shapes,
+        labels=labels.tolist(),
+        damage_radius_range=tuple(dataset_config.get("damage_radius_range", [1, 3])),
+        damage_types=dataset_config.get("damage_types", ["sphere", "cube"]),
+        random_proportion_range=tuple(
+            dataset_config.get("random_proportion_range", [0.1, 0.2])
+        ),
+        num_damage_sites_range=tuple(
+            dataset_config.get("num_damage_sites_range", [1, 1])
+        ),
+        min_damage_target_cells=dataset_config.get("min_damage_target_cells", 0),
+        max_damage_attempts=dataset_config.get("max_damage_attempts", 1),
+        fixed_damage=True,
+        augment_rotations=dataset_config.get("augment_rotations", False),
+        return_damage_mask=True,
+        seed=seed,
+        filter_label=dataset_config.get("filter_label"),
     )
 
 
-def load_combined_model(repo_id, checkpoint_name, device):
-    config_path = hf_hub_download(
-        repo_id=repo_id,
-        filename="config.json",
-        repo_type="model",
-    )
-    model_config = load_config_from_json(config_path)
-    model = create_model_from_config(model_config)
-
-    checkpoint_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=checkpoint_name,
-        repo_type="model",
-    )
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
-    model.load_state_dict(state_dict)
-    model = model.to(device)
-    print(f"Loaded {checkpoint_name} from {repo_id}")
-    return model
-
-
-def render_shapenet_sample(
+def render_sample(
     model,
     dataset,
     sample_idx,
     idx_to_class,
     steps,
-    device,
     output_dir,
     image_size,
 ):
-    damaged_shape, damage_direction, label, original_shape = dataset[sample_idx]
+    damaged_shape, true_damage, label, original_shape = dataset[sample_idx]
     label_id = int(label.item())
     true_class = idx_to_class.get(label_id, str(label_id))
 
-    state = model.initialize(damaged_shape.unsqueeze(0).to(device))
-    with torch.no_grad():
-        for _ in range(steps):
-            state = model(state)
-        damage_logits = model.damage_logits(state)
-        predicted_damage = torch.argmax(damage_logits, dim=-1).squeeze(0)
-        class_logits = model.class_logits(state)
-        predicted_label = int(torch.argmax(class_logits, dim=-1).item())
+    prediction = model.predict(
+        damaged_shape.numpy(),
+        steps=steps,
+        class_label=label_id,
+    )
+    predicted_damage = prediction.damage_labels.squeeze(0).cpu().numpy().astype(np.uint8)
+    predicted_class = None
+    if prediction.class_label is not None:
+        predicted_label = int(prediction.class_label.item())
+        predicted_class = idx_to_class.get(predicted_label, str(predicted_label))
 
-    predicted_class = idx_to_class.get(predicted_label, str(predicted_label))
     damage_acc = damage_accuracy(
-        predicted_damage.cpu(),
-        damage_direction,
+        torch.tensor(predicted_damage),
+        true_damage,
         damaged_shape,
     )
 
     original_np = original_shape.numpy().astype(np.uint8)
     damaged_np = damaged_shape.numpy().astype(np.uint8)
-    true_damage_np = damage_direction.numpy().astype(np.uint8)
-    predicted_damage_np = predicted_damage.cpu().numpy().astype(np.uint8)
+    true_damage_np = true_damage.numpy().astype(np.uint8)
     zeros = np.zeros_like(true_damage_np, dtype=np.uint8)
+
+    prediction_label = f"Predicted\ndamage acc: {damage_acc:.3f}"
+    if predicted_class is not None:
+        prediction_label = f"Predicted\nclass: {predicted_class}\ndamage acc: {damage_acc:.3f}"
 
     panels = [
         (
@@ -228,21 +194,20 @@ def render_shapenet_sample(
         ),
         (
             plot_voxels(damaged_np, zeros, size=(image_size, image_size)),
-            "Damage (no class)",
+            "Damage",
         ),
         (
-            plot_voxels(damaged_np, predicted_damage_np, size=(image_size, image_size)),
-            f"Predicted\nclass: {predicted_class}\ndamage acc: {damage_acc:.3f}",
+            plot_voxels(damaged_np, predicted_damage, size=(image_size, image_size)),
+            prediction_label,
         ),
         (
             plot_voxels(damaged_np, true_damage_np, size=(image_size, image_size)),
-            f"True\nclass: {true_class}",
+            "True damage",
         ),
     ]
 
-    row = make_labeled_row(panels)
     output_path = output_dir / f"sample_{sample_idx:03d}.png"
-    row.save(output_path)
+    make_labeled_row(panels).save(output_path)
     return output_path
 
 
@@ -252,82 +217,6 @@ def damage_accuracy(predicted_damage, true_damage, damaged_shape):
         return 0.0
     correct = (predicted_damage == true_damage) & alive_mask
     return correct.float().sum().item() / alive_mask.float().sum().item()
-
-
-def legacy_damage_inference(
-    model_repo_id="shyamsn97/table-cube-regen-damage-detection-20",
-    output_path="combined_img.png",
-    steps=128,
-):
-    loaded_model, config = load_weights_from_huggingface(
-        model=None,  # Will create model from config
-        repo_id=model_repo_id,
-        filename="pytorch_model.pt",
-        load_config=True,
-        config_filename="config.json",
-    )
-    del config
-    labels = np.load(PROJECT_ROOT / "data" / "ydata_7class.npy")
-    shapes = np.load(PROJECT_ROOT / "data" / "xdata_7class.npy")
-
-    dataset = DynamicDamageDataset(
-        shapes,
-        labels,
-        damage_radius_range=(2, 3),
-        damage_types=["sphere", "cube"],
-        random_proportion_range=(0.1, 0.2),
-        fixed_damage=False,
-        augment_rotations=False,
-        return_damage_mask=True,
-        seed=None,
-        filter_label=3,
-    )
-
-    damage_mask, damage_direction, label, _ = dataset[0]
-    state = loaded_model.initialize(damage_mask.unsqueeze(0))
-    with torch.no_grad():
-        for _ in range(steps):
-            state = loaded_model(state, label.unsqueeze(0))
-            predictions = loaded_model.classify(state)
-            predictions = torch.argmax(predictions, dim=-1)
-    print(predictions.shape)
-    print(damage_mask.shape)
-    print(damage_direction.shape)
-    nonzero_pred = predictions.squeeze() != 0
-    zero_pred = predictions.squeeze() == 0
-    print(
-        "Damage Direction Accuracy: ",
-        torch.mean(
-            (
-                predictions.squeeze()[nonzero_pred]
-                == damage_direction.squeeze()[nonzero_pred]
-            ).float()
-        ),
-    )
-    print(
-        "Undamaged Accuracy: ",
-        torch.mean(
-            (
-                predictions.squeeze()[zero_pred] == damage_direction.squeeze()[zero_pred]
-            ).float()
-        ),
-    )
-    ground_truth_img = plot_voxels(
-        live_mask=damage_mask.squeeze().detach().cpu().numpy().astype(np.uint8),
-        damage_direction=damage_direction.squeeze().detach().cpu().numpy().astype(
-            np.uint8
-        ),
-    )
-    predicted_img = plot_voxels(
-        live_mask=damage_mask.squeeze().detach().cpu().numpy().astype(np.uint8),
-        damage_direction=predictions.squeeze().detach().cpu().numpy().astype(np.uint8),
-    )
-
-    combined_img = make_labeled_row(
-        [(predicted_img, "Prediction"), (ground_truth_img, "Ground Truth")]
-    )
-    combined_img.save(output_path)
-    print(f"Saved {output_path}")
 
 
 def make_labeled_row(panels):

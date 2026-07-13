@@ -6,9 +6,8 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 
-from regen.combined_trainer import CombinedNCA3DTrainer
 from regen.dataset import DynamicDamageDataset
-from regen.model import NCA3DCombinedDamageClassifier, NCA3DDamageDetection
+from regen.model import CellRecoveryModel
 from regen.shapenet import load_shapenet_voxels
 from regen.trainer import NCA3DTrainer
 
@@ -130,9 +129,10 @@ def train_combined_from_config(
     random.seed(seed)
     np.random.seed(seed)
 
-    model = NCA3DCombinedDamageClassifier(
+    model = CellRecoveryModel(
         num_hidden_channels=model_config.get("num_hidden_channels", 20),
         num_classes=num_classes,
+        class_channels=num_classes,
         num_damage_directions=model_config.get("num_damage_directions", 7),
         alpha_living_threshold=model_config.get("alpha_living_threshold", 0.1),
         cell_fire_rate=model_config.get("cell_fire_rate", 0.5),
@@ -141,7 +141,7 @@ def train_combined_from_config(
         freeze_perception=not model_config.get("train_perception", False),
     )
 
-    trainer = CombinedNCA3DTrainer(
+    trainer = NCA3DTrainer(
         model=model,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
@@ -150,7 +150,8 @@ def train_combined_from_config(
         iterations_per_epoch=_optional_positive(
             training_config.get("iterations_per_epoch", 100)
         ),
-        steps_per_sample=training_config.get("steps_per_sample", 96),
+        min_steps_per_sample=training_config.get("min_steps_per_sample", 96),
+        max_steps_per_sample=training_config.get("max_steps_per_sample", 128),
         damage_loss_weight=training_config.get("damage_loss_weight", 1.0),
         class_loss_weight=training_config.get("class_loss_weight", 1.0),
         damage_class_weight=training_config.get("damage_class_weight", 1.0),
@@ -168,7 +169,7 @@ def train_combined_from_config(
         wandb_watch_log_freq=training_config.get("wandb_watch_log_freq", 100),
         wandb_log_gradient_sums=training_config.get("wandb_log_gradient_sums", True),
         wandb_gradient_log_freq=training_config.get("wandb_gradient_log_freq", 1),
-        checkpoint_dir=output_config.get("checkpoint_dir", "combined_nca_models"),
+        save_dir=output_config.get("save_dir", "nca_models"),
         num_workers=training_config.get("num_workers", 0),
         validate_frequency=output_config.get("validate_frequency", 1),
         repo_id=output_config.get("repo_id"),
@@ -176,9 +177,7 @@ def train_combined_from_config(
     )
 
     if class_to_idx is not None:
-        _save_class_mapping(
-            output_config.get("checkpoint_dir", "combined_nca_models"), class_to_idx
-        )
+        _save_class_mapping(output_config.get("save_dir", "nca_models"), class_to_idx)
 
     print(
         "Training combined model "
@@ -208,10 +207,11 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
         fixed_damage=dataset_config.get("fixed_damage", False),
         filter_label=dataset_config.get("filter_label"),
     )
-    model = NCA3DDamageDetection(
+    model = CellRecoveryModel(
         use_class_embeddings=model_config.get("use_class_embeddings", True),
         num_hidden_channels=model_config.get("num_hidden_channels", 20),
         num_classes=model_config.get("num_classes", int(labels.max()) + 1),
+        class_channels=0,
         num_damage_directions=model_config.get("num_damage_directions", 7),
         alpha_living_threshold=model_config.get("alpha_living_threshold", 0.1),
         cell_fire_rate=model_config.get("cell_fire_rate", 0.5),
@@ -224,7 +224,8 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
         batch_size=training_config.get("batch_size", 8),
         lr=training_config.get("lr", 2e-5),
         iterations_per_epoch=training_config.get("iterations_per_epoch", 100),
-        steps_per_sample=training_config.get("steps_per_sample", 96),
+        min_steps_per_sample=training_config.get("min_steps_per_sample", 96),
+        max_steps_per_sample=training_config.get("max_steps_per_sample", 128),
         buffer_size=training_config.get("buffer_size", 1000),
         buffer_sampling_prob=training_config.get("buffer_sampling_prob", 0.5),
         grad_clip=training_config.get("grad_clip", 1.0),
@@ -244,12 +245,8 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
         wandb_log_gradient_sums=training_config.get("wandb_log_gradient_sums", True),
         wandb_gradient_log_freq=training_config.get("wandb_gradient_log_freq", 1),
         save_dir=output_config.get("save_dir", "nca_models"),
-        repo_id=output_config.get("repo_id", "shyamsn97/cube"),
+        repo_id=output_config.get("repo_id"),
         repo_type=output_config.get("repo_type", "model"),
-        model_repo_id=output_config.get(
-            "model_repo_id",
-            "shyamsn97/cube-regen-damage-detection",
-        ),
     )
     trainer.train(
         epochs=training_config.get("epochs", 500),
@@ -330,8 +327,8 @@ def _device(value):
     return torch.device(value) if value else None
 
 
-def _save_class_mapping(checkpoint_dir: str, class_to_idx: Dict[str, int]):
-    path = Path(checkpoint_dir)
+def _save_class_mapping(save_dir: str, class_to_idx: Dict[str, int]):
+    path = Path(save_dir)
     path.mkdir(parents=True, exist_ok=True)
     with open(path / "class_to_idx.json", "w") as f:
         json.dump(class_to_idx, f, indent=2, sort_keys=True)

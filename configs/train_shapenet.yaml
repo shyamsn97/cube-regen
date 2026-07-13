@@ -28,7 +28,8 @@ training:
   batch_size: 8
   lr: 0.0002
   iterations_per_epoch: 100
-  steps_per_sample: 96
+  min_steps_per_sample: 96
+  max_steps_per_sample: 128
   damage_loss_weight: 1.0
   class_loss_weight: 1.0
   damage_class_weight: 25.0
@@ -39,8 +40,8 @@ training:
   grad_clip: 1.0
   num_workers: 0
 output:
-  checkpoint_dir: combined_shapenet_nca_models
+  save_dir: combined_shapenet_nca_models
   save_frequency: 10
   validate_frequency: 1
-  repo_id: shyamsn97/shapenet-cube-regen-combined-48
+  repo_id: shyamsn97/shapenet-cube-regen-combined-hdim-48
   repo_type: model

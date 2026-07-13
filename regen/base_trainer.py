@@ -8,6 +8,8 @@ import torch.optim as optim
 from torch.utils.checkpoint import checkpoint
 from torch.utils.data import DataLoader
 
+from regen.device import preferred_device
+
 
 class ReplayBuffer:
     """Replay buffer for intermediate NCA states and their targets."""
@@ -51,7 +53,8 @@ class BaseNCA3DTrainer(ABC):
         batch_size=8,
         lr=1e-4,
         iterations_per_epoch=100,
-        steps_per_sample=96,
+        min_steps_per_sample=96,
+        max_steps_per_sample=128,
         buffer_size=1000,
         buffer_sampling_prob=0.5,
         device=None,
@@ -70,7 +73,12 @@ class BaseNCA3DTrainer(ABC):
         self.batch_size = batch_size
         self.lr = lr
         self.iterations_per_epoch = iterations_per_epoch
-        self.steps_per_sample = steps_per_sample
+        if min_steps_per_sample <= 0 or max_steps_per_sample <= 0:
+            raise ValueError("NCA rollout step bounds must be positive.")
+        if min_steps_per_sample > max_steps_per_sample:
+            raise ValueError("min_steps_per_sample cannot exceed max_steps_per_sample.")
+        self.min_steps_per_sample = min_steps_per_sample
+        self.max_steps_per_sample = max_steps_per_sample
         self.buffer_sampling_prob = buffer_sampling_prob
         self.grad_clip = grad_clip
         self.gradient_checkpointing = gradient_checkpointing
@@ -85,11 +93,7 @@ class BaseNCA3DTrainer(ABC):
         self.wandb_initialized = False
         self.wandb = None
         self.global_step = 0
-        self.device = (
-            device
-            if device is not None
-            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = preferred_device(device)
 
         self.model = self.model.to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
@@ -100,7 +104,8 @@ class BaseNCA3DTrainer(ABC):
             "batch_size": self.batch_size,
             "learning_rate": self.lr,
             "iterations_per_epoch": self.iterations_per_epoch,
-            "steps_per_sample": self.steps_per_sample,
+            "min_steps_per_sample": self.min_steps_per_sample,
+            "max_steps_per_sample": self.max_steps_per_sample,
             "buffer_size": self.replay_buffer.buffer.maxlen,
             "buffer_sampling_prob": self.buffer_sampling_prob,
             "grad_clip": self.grad_clip,
@@ -230,7 +235,11 @@ class BaseNCA3DTrainer(ABC):
 
     def run_nca(self, states, labels=None):
         states_history = [states.detach()]
-        for _ in range(self.steps_per_sample):
+        steps_per_sample = random.randint(
+            self.min_steps_per_sample,
+            self.max_steps_per_sample,
+        )
+        for _ in range(steps_per_sample):
             if labels is None:
                 if self.gradient_checkpointing and self.model.training:
                     states = checkpoint(self.model, states, use_reentrant=False)
@@ -259,7 +268,7 @@ class BaseNCA3DTrainer(ABC):
             return
 
         max_step = len(states_history) - 1
-        min_step = min(max(1, self.steps_per_sample // 2), max_step)
+        min_step = min(max(1, max_step // 2), max_step)
         for _ in range(num_samples):
             step_idx = random.randint(min_step, max_step)
             self.replay_buffer.add(

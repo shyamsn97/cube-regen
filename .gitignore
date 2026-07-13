@@ -60,3 +60,4 @@ mlruns/*
 data/*
 .DS_Store
 */**/docs/internal/*
+docs/internal/*

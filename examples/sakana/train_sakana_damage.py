@@ -22,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from generate_sakana_voxel import DEFAULT_OUTPUT_DIR, save_sakana_assets
 from regen.dataset import DynamicDamageDataset
-from regen.model import NCA3DDamageDetection, save_weights_to_huggingface
+from regen.model import CellRecoveryModel
 from regen.trainer import NCA3DTrainer
 
 
@@ -46,7 +46,18 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-samples", type=int, default=32)
-    parser.add_argument("--steps", type=int, default=96, help="NCA rollout steps.")
+    parser.add_argument(
+        "--min-steps",
+        type=int,
+        default=96,
+        help="Minimum NCA rollout steps.",
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=128,
+        help="Maximum NCA rollout steps.",
+    )
     parser.add_argument(
         "--damage-radius-min",
         type=int,
@@ -379,88 +390,6 @@ def save_damage_previews(
     return montage_path
 
 
-class SakanaNCA3DTrainer(NCA3DTrainer):
-    """Sakana-specific save loop around the repo's damage NCA trainer."""
-
-    def __init__(
-        self,
-        *args,
-        model_repo_id=None,
-        hf_filename="pytorch_model.pt",
-        hf_config_filename="config.json",
-        **kwargs,
-    ):
-        super().__init__(*args, model_repo_id=model_repo_id or "", **kwargs)
-        self.model_repo_id = model_repo_id
-        self.hf_filename = hf_filename
-        self.hf_config_filename = hf_config_filename
-        self.latest_checkpoint_path = None
-        self.latest_preview_path = None
-        self.uploaded_files = None
-
-    def save_model(self, epoch, loss, upload=False):
-        checkpoint = self.checkpoint_state(
-            epoch,
-            {
-                "loss": loss,
-                "model_config": self.model.get_config(),
-            },
-        )
-        checkpoint_path = Path(self.save_dir) / "sakana_damage_model.pt"
-        torch.save(checkpoint, checkpoint_path)
-        self.latest_checkpoint_path = checkpoint_path
-        print(f"Saved Sakana checkpoint: {checkpoint_path}", flush=True)
-
-        if upload and self.model_repo_id:
-            print(
-                f"Uploading final Sakana NCA weights to Hugging Face: {self.model_repo_id}",
-                flush=True,
-            )
-            self.uploaded_files = save_weights_to_huggingface(
-                model=self.model,
-                repo_id=self.model_repo_id,
-                token=os.environ.get("HF_TOKEN"),
-                commit_message=f"Save final Sakana damage NCA weights for epoch {epoch}",
-                filename=self.hf_filename,
-                save_config=True,
-                config_filename=self.hf_config_filename,
-            )
-
-    def train(self, epochs, save_frequency=5, visualization_frequency=10):
-        for epoch in range(epochs):
-            train_metrics = self.train_epoch(epoch)
-            train_loss = train_metrics["loss"]
-            self.train_losses.append(train_loss)
-            print(
-                f"Epoch {epoch}: "
-                f"train_loss={train_loss:.4f}, "
-                f"alive_acc={train_metrics.get('damage_accuracy', 0.0):.4f}, "
-                f"damaged_acc={train_metrics.get('damaged_accuracy', 0.0):.4f}",
-                flush=True,
-            )
-
-            is_final_epoch = epoch == epochs - 1
-            should_periodic_save = (
-                save_frequency > 0 and epoch > 0 and epoch % save_frequency == 0
-            )
-            if should_periodic_save or is_final_epoch:
-                self.save_model(epoch, train_loss, upload=is_final_epoch)
-
-            should_periodic_visualize = (
-                visualization_frequency > 0
-                and epoch > 0
-                and epoch % visualization_frequency == 0
-            )
-            if should_periodic_visualize or is_final_epoch:
-                preview = self.visualize_results(epoch)
-                preview_path = (
-                    Path(self.save_dir) / "sakana_damage_target_vs_prediction.png"
-                )
-                preview.save(preview_path)
-                self.latest_preview_path = preview_path
-                print(f"Saved Sakana prediction preview: {preview_path}", flush=True)
-
-
 def args_to_config(args):
     config = vars(args).copy()
     config["voxel_path"] = str(args.voxel_path)
@@ -512,21 +441,23 @@ def train_sakana_damage(voxel, config):
     if iterations_per_epoch is None:
         iterations_per_epoch = math.ceil(config["num_samples"] / config["batch_size"])
 
-    model = NCA3DDamageDetection(
+    model = CellRecoveryModel(
         use_class_embeddings=False,
         num_hidden_channels=config["hidden_channels"],
         num_classes=1,
+        class_channels=0,
         num_damage_directions=7,
         use_tanh=False,
     )
 
-    trainer = SakanaNCA3DTrainer(
+    trainer = NCA3DTrainer(
         model=model,
         dataset=dataset,
         batch_size=config["batch_size"],
         lr=config["lr"],
         iterations_per_epoch=iterations_per_epoch,
-        steps_per_sample=config["steps"],
+        min_steps_per_sample=config["min_steps"],
+        max_steps_per_sample=config["max_steps"],
         buffer_size=config["buffer_size"],
         buffer_sampling_prob=config["buffer_sampling_prob"],
         grad_clip=config["grad_clip"],
@@ -537,9 +468,7 @@ def train_sakana_damage(voxel, config):
         wandb_project=config.get("wandb_project"),
         wandb_run_name=config.get("wandb_run_name"),
         save_dir=str(output_dir),
-        model_repo_id=config.get("repo_id"),
-        hf_filename=config.get("hf_filename", "pytorch_model.pt"),
-        hf_config_filename=config.get("hf_config_filename", "config.json"),
+        repo_id=None,
     )
 
     print(
@@ -558,16 +487,34 @@ def train_sakana_damage(voxel, config):
         visualization_frequency=config["visualization_frequency"],
     )
 
+    pretrained_paths = trainer.model.save_pretrained(
+        output_dir,
+        filename=config.get("hf_filename", "pytorch_model.pt"),
+        config_filename=config.get("hf_config_filename", "config.json"),
+    )
+    preview_path = output_dir / "sakana_damage_target_vs_prediction.png"
+    trainer.visualize_results(config["epochs"] - 1).save(preview_path)
+    print(f"Saved Sakana pretrained model: {pretrained_paths}", flush=True)
+    print(f"Saved Sakana prediction preview: {preview_path}", flush=True)
+
+    uploaded_files = None
+    if config.get("repo_id"):
+        print(f"Uploading Sakana model to Hugging Face: {config['repo_id']}", flush=True)
+        uploaded_files = trainer.model.save_pretrained(
+            config["repo_id"],
+            push_to_hub=True,
+            token=os.environ.get("HF_TOKEN"),
+            filename=config.get("hf_filename", "pytorch_model.pt"),
+            config_filename=config.get("hf_config_filename", "config.json"),
+            commit_message="Save Sakana damage NCA model",
+        )
+
     result = {
-        "checkpoint_path": str(trainer.latest_checkpoint_path)
-        if trainer.latest_checkpoint_path
-        else None,
-        "preview_path": str(trainer.latest_preview_path)
-        if trainer.latest_preview_path
-        else None,
+        "model": pretrained_paths,
+        "preview_path": str(preview_path),
     }
-    if trainer.uploaded_files:
-        result["huggingface"] = trainer.uploaded_files
+    if uploaded_files:
+        result["huggingface"] = uploaded_files
 
     return result
 

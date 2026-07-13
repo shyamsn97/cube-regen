@@ -24,7 +24,7 @@ The trainer uses the generated voxel as the only base shape, applies random sphe
 For a faster smoke test:
 
 ```bash
-python examples/sakana/train_sakana_damage.py --epochs 1 --num-samples 4 --batch-size 2 --steps 4 --device cpu
+python examples/sakana/train_sakana_damage.py --epochs 1 --num-samples 4 --batch-size 2 --min-steps 4 --max-steps 6 --device cpu
 ```
 
 Preview the sampled training damage without training:
@@ -60,7 +60,7 @@ python examples/sakana/infer_sakana_damage.py
 This loads the Hugging Face model repo by default. To use a local checkpoint instead, pass `--checkpoint`:
 
 ```bash
-python examples/sakana/infer_sakana_damage.py --checkpoint examples/sakana/outputs/sakana_damage_model.pt
+python examples/sakana/infer_sakana_damage.py --checkpoint examples/sakana/outputs
 ```
 
 or:
@@ -74,10 +74,11 @@ The inference script intentionally supports only `sphere` and `cube` damage, not
 Render an iterative 3D recovery GIF:
 
 ```bash
-make visualize-sakana-recovery-gif
+make visualize-sakana-damage-recovery-gif
+make visualize-sakana-seed-recovery-gif
 ```
 
-The recovery GIF applies multiple deterministic damage spots, predicts damage directions, adds neighboring voxels in the predicted directions, and repeats. Existing voxels are blue, predicted repair-boundary voxels are yellow, newly recovered voxels are green, and damaged voxels are empty holes.
+The damage recovery target starts from multiple deterministic damage spots. The seed recovery target starts from a small live-cell seed, defaulting to 64 starting cells and 96 recovery iterations so you can watch whether the model regrows the shape. The 3D GIF renders every fourth recovery step by default to keep generation quick; set `SAKANA_RECOVERY_FRAME_STRIDE=1` to render every step. Existing voxels are blue, predicted repair-boundary voxels are yellow, newly recovered voxels are green, and damaged voxels are empty holes. Recovery uses repeated prediction voting by default, so a repair target must be predicted in 6 of the last 12 recovery passes before it is added; tune this with `SAKANA_RECOVERY_SEED_CELLS`, `SAKANA_RECOVERY_FRAME_STRIDE`, `SAKANA_RECOVERY_CONFIDENCE_WINDOW`, and `SAKANA_RECOVERY_CONFIDENCE_REQUIRED`.
 
 Run on Modal:
 

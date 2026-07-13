@@ -49,7 +49,8 @@ training:
   batch_size: 4
   lr: 0.001
   iterations_per_epoch: 100
-  steps_per_sample: 64
+  min_steps_per_sample: 96
+  max_steps_per_sample: 128
   damage_class_weight: 25.0
   damage_loss_type: cross_entropy
   focal_gamma: 2.0
@@ -61,6 +62,5 @@ output:
   save_dir: shapenet_damage_nca_models
   save_frequency: 20
   visualization_frequency: 10
-  repo_id: shyamsn97/shapenet-cube-regen-damage-detection-txt-48
+  repo_id: shyamsn97/shapenet-cube-regen-combined-hdim-48
   repo_type: model
-  model_repo_id: shyamsn97/shapenet-cube-regen-damage-detection-48

@@ -12,20 +12,9 @@ from regen.train_config import load_config, load_training_data, train_from_confi
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Train cube-regen models locally or on Modal from one YAML config."
-    )
-    parser.add_argument(
-        "--config",
-        default="configs/train_combined.yaml",
-        help="Path to a YAML training config.",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["local", "modal"],
-        default=None,
-        help="Override run.mode from the config.",
-    )
+    parser = argparse.ArgumentParser(description="Train cube-regen from a YAML config.")
+    parser.add_argument("--config", default="configs/train_combined.yaml")
+    parser.add_argument("--mode", choices=["local", "modal"], default=None)
     return parser.parse_args()
 
 
@@ -33,108 +22,34 @@ def main():
     args = parse_args()
     config = load_config(args.config)
     mode = args.mode or config.get("run", {}).get("mode", "local")
-    print_training_summary(config, mode=mode, config_path=args.config)
+    print_summary(config, mode, args.config)
 
     if mode == "local":
         train_from_config(config)
-    elif mode == "modal":
+        return
+    if mode == "modal":
         run_modal(config)
-    else:
-        raise ValueError(f"Unsupported training mode: {mode}")
+        return
+    raise ValueError(f"Unsupported training mode: {mode}")
 
 
-def print_training_summary(config, mode, config_path=None):
-    dataset_config = config.get("dataset", {})
-    model_config = config.get("model", {})
-    training_config = config.get("training", {})
-    output_config = config.get("output", {})
-    run_config = config.get("run", {})
-    model_type = model_config.get("type", "combined")
-    default_wandb_project = (
-        "nca-3d-combined" if model_type == "combined" else "nca-3d-damage-detection"
-    )
-
+def print_summary(config, mode, config_path):
+    dataset = config.get("dataset", {})
+    model = config.get("model", {})
+    training = config.get("training", {})
+    output = config.get("output", {})
     summary = {
         "config": config_path,
         "mode": mode,
-        "seed": config.get("seed", 0),
-        "run": {
-            "app_name": run_config.get("app_name"),
-            "gpu": run_config.get("gpu"),
-            "detach": run_config.get("detach"),
-            "timeout_seconds": run_config.get("timeout_seconds"),
-        },
-        "dataset": {
-            "source": dataset_config.get("source", "npy"),
-            "root": dataset_config.get("root"),
-            "shapes_path": dataset_config.get("shapes_path"),
-            "labels_path": dataset_config.get("labels_path"),
-            "sample_categories": dataset_config.get("sample_categories"),
-            "max_shapes_per_class": dataset_config.get("max_shapes_per_class"),
-            "target_size": dataset_config.get("target_size"),
-            "val_split": dataset_config.get("val_split"),
-            "damage_radius_range": dataset_config.get("damage_radius_range"),
-            "damage_types": dataset_config.get("damage_types"),
-            "num_damage_sites_range": dataset_config.get("num_damage_sites_range"),
-            "min_damage_target_cells": dataset_config.get("min_damage_target_cells", 0),
-            "max_damage_attempts": dataset_config.get("max_damage_attempts", 1),
-            "augment_rotations": dataset_config.get("augment_rotations"),
-        },
-        "model": {
-            "type": model_type,
-            "num_hidden_channels": model_config.get("num_hidden_channels"),
-            "num_damage_directions": model_config.get("num_damage_directions"),
-            "clip_range": model_config.get("clip_range"),
-            "use_tanh": model_config.get("use_tanh"),
-            "train_perception": model_config.get("train_perception"),
-        },
-        "training": {
-            "epochs": training_config.get("epochs"),
-            "batch_size": training_config.get("batch_size"),
-            "lr": training_config.get("lr"),
-            "iterations_per_epoch": training_config.get("iterations_per_epoch"),
-            "steps_per_sample": training_config.get("steps_per_sample"),
-            "damage_loss_weight": training_config.get("damage_loss_weight", 1.0),
-            "class_loss_weight": training_config.get("class_loss_weight", 1.0),
-            "damage_class_weight": training_config.get("damage_class_weight", 1.0),
-            "damage_loss_type": training_config.get(
-                "damage_loss_type",
-                "cross_entropy",
-            ),
-            "focal_gamma": training_config.get("focal_gamma", 2.0),
-            "buffer_size": training_config.get("buffer_size"),
-            "buffer_sampling_prob": training_config.get("buffer_sampling_prob"),
-            "grad_clip": training_config.get("grad_clip"),
-            "gradient_checkpointing": training_config.get("gradient_checkpointing"),
-            "num_workers": training_config.get("num_workers"),
-            "wandb_project": training_config.get(
-                "wandb_project",
-                default_wandb_project,
-            ),
-            "wandb_run_name": training_config.get("wandb_run_name"),
-            "wandb_watch": training_config.get("wandb_watch", True),
-            "wandb_watch_log": training_config.get("wandb_watch_log", "all"),
-            "wandb_watch_log_freq": training_config.get("wandb_watch_log_freq", 100),
-            "wandb_log_gradient_sums": training_config.get(
-                "wandb_log_gradient_sums",
-                True,
-            ),
-            "wandb_gradient_log_freq": training_config.get(
-                "wandb_gradient_log_freq", 1
-            ),
-        },
-        "output": {
-            "checkpoint_dir": output_config.get("checkpoint_dir")
-            or output_config.get("save_dir"),
-            "save_frequency": output_config.get("save_frequency"),
-            "validate_frequency": output_config.get("validate_frequency"),
-            "repo_id": output_config.get("repo_id")
-            or output_config.get("model_repo_id"),
-            "repo_type": output_config.get("repo_type"),
-        },
+        "dataset": dataset.get("source", "npy"),
+        "model": model.get("type", "combined"),
+        "epochs": training.get("epochs"),
+        "batch_size": training.get("batch_size"),
+        "min_steps_per_sample": training.get("min_steps_per_sample"),
+        "max_steps_per_sample": training.get("max_steps_per_sample"),
+        "save_dir": output.get("save_dir"),
+        "repo_id": output.get("repo_id"),
     }
-
-    print("Resolved training parameters:")
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 
@@ -142,45 +57,36 @@ def run_modal(config):
     try:
         import modal
     except ImportError as exc:
-        raise ImportError(
-            "Modal training requires the `modal` package. Install it or run with "
-            "`--mode local`."
-        ) from exc
+        raise ImportError("Install `modal` or run with `--mode local`.") from exc
 
     run_config = config.get("run", {})
-    requirements = run_config.get(
-        "requirements",
-        [
-            "numpy",
-            "torch",
-            "tensorboard",
-            "matplotlib",
-            "wandb",
-            "Pillow",
-            "tqdm",
-            "huggingface_hub",
-            "PyYAML",
-        ],
-    )
-    env_variables = {
-        key: os.environ.get(key)
-        for key in run_config.get("secret_env", ["HF_TOKEN", "WANDB_API_KEY"])
-        if os.environ.get(key) is not None
-    }
-
-    app = modal.App(run_config.get("app_name", "nca-3d-trainer"))
+    app = modal.App(run_config.get("app_name", "cube-regen-train"))
     image = (
         modal.Image.debian_slim()
-        .pip_install(requirements)
+        .pip_install(
+            run_config.get(
+                "requirements",
+                [
+                    "numpy",
+                    "torch",
+                    "matplotlib",
+                    "Pillow",
+                    "tqdm",
+                    "huggingface_hub",
+                    "PyYAML",
+                    "wandb",
+                ],
+            )
+        )
         .add_local_python_source("regen")
     )
-    secrets = [modal.Secret.from_dict(env_variables)] if env_variables else []
+    secrets = make_secrets(modal, run_config)
     volumes = {
-        volume_config["mount_path"]: modal.Volume.from_name(
-            volume_config["name"],
-            create_if_missing=volume_config.get("create_if_missing", False),
+        volume["mount_path"]: modal.Volume.from_name(
+            volume["name"],
+            create_if_missing=volume.get("create_if_missing", False),
         )
-        for volume_config in run_config.get("volumes", [])
+        for volume in run_config.get("volumes", [])
     }
 
     @app.function(
@@ -194,8 +100,6 @@ def run_modal(config):
     def train_remote(remote_config, shapes=None, labels=None, class_to_idx=None):
         from regen.train_config import train_from_config
 
-        print_training_summary(remote_config, mode="modal-remote")
-
         train_from_config(
             remote_config,
             shapes=shapes,
@@ -203,21 +107,34 @@ def run_modal(config):
             class_to_idx=class_to_idx,
         )
 
+    shapes, labels, class_to_idx = modal_data_payload(config)
     detach = run_config.get("detach", True)
-    if config.get("dataset", {}).get("source") == "shapenet":
-        shapes, labels, class_to_idx = None, None, None
-    else:
-        shapes, labels, class_to_idx = load_training_data(config)
-
     with app.run(detach=detach):
         if detach:
             call = train_remote.spawn(config, shapes, labels, class_to_idx)
             call_id = getattr(call, "object_id", None) or getattr(
-                call, "function_call_id", None
+                call,
+                "function_call_id",
+                None,
             )
-            print(f"Spawned Modal training call in detached app: {call_id or call}")
+            print(f"Spawned detached Modal training call: {call_id or call}")
         else:
             train_remote.remote(config, shapes, labels, class_to_idx)
+
+
+def make_secrets(modal, run_config):
+    values = {
+        key: os.environ[key]
+        for key in run_config.get("secret_env", ["HF_TOKEN", "WANDB_API_KEY"])
+        if key in os.environ
+    }
+    return [modal.Secret.from_dict(values)] if values else []
+
+
+def modal_data_payload(config):
+    if config.get("dataset", {}).get("source") == "shapenet":
+        return None, None, None
+    return load_training_data(config)
 
 
 if __name__ == "__main__":

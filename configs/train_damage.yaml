@@ -25,7 +25,8 @@ training:
   batch_size: 8
   lr: 0.0005
   iterations_per_epoch: 100
-  steps_per_sample: 96
+  min_steps_per_sample: 96
+  max_steps_per_sample: 128
   damage_class_weight: 25.0
   damage_loss_type: cross_entropy
   focal_gamma: 2.0
@@ -37,4 +38,4 @@ output:
   visualization_frequency: 10
   repo_id: shyamsn97/table-cube-regen-damage-detection-txt-20
   repo_type: model
-  model_repo_id: shyamsn97/table-cube-regen-damage-detection-20
+  repo_id: shyamsn97/table-cube-regen-damage-detection-20

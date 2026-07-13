@@ -75,10 +75,10 @@ model:
 training:
   epochs: 500
 output:
-  checkpoint_dir: combined_nca_models
+  save_dir: combined_nca_models
 ```
 
-For the older damage-only model, set:
+For damage-only training, set:
 
 ```yaml
 model:
@@ -124,45 +124,25 @@ By default, the subset downloader caches the public ShapeNet voxel archive in `~
 To load the model:
 
 ```python
-from regen.model import load_weights_from_huggingface
-import torch
+from regen.model import CellRecoveryModel
 
-loaded_model, config = load_weights_from_huggingface(
-    model=None,  # Creates the right model from config.json
-    repo_id=model_repo_id,
-    filename="pytorch_model.pt",
-    load_config=True,
-    config_filename="config.json",
-)
+model = CellRecoveryModel.from_pretrained("shyamsn97/shapenet-cube-regen-combined-hdim-48")
+prediction = model.predict(damaged_voxels, steps=96)
 ```
 
-Run NCA updates for several steps, then read the outputs:
+The prediction object includes voxel-wise damage labels and, for combined models, a class label:
 
 ```python
-state = loaded_model.initialize(initial_mask.unsqueeze(0))
-with torch.no_grad():
-    for _ in range(96):
-        state = loaded_model(state)
-
-    damage_logits = loaded_model.classify(state)
-    damage_predictions = torch.argmax(damage_logits, dim=-1)
-
-    if hasattr(loaded_model, "classify_shape"):
-        class_logits = loaded_model.classify_shape(state)
-        class_prediction = torch.argmax(class_logits, dim=-1)
+damage_predictions = prediction.damage_labels
+class_prediction = prediction.class_label
 ```
 
-For a damage-only model with class embeddings, pass the class label during rollout:
+To save or upload a trained model:
 
 ```python
-class_label = torch.tensor([0])
-state = loaded_model.initialize(initial_mask.unsqueeze(0))
-with torch.no_grad():
-    for _ in range(96):
-        state = loaded_model(state, class_label)
+model.save_pretrained("outputs/model")
+model.save_pretrained("username/repo-name", push_to_hub=True)
 ```
-
-An older damage-only example can be seen in [inference](./scripts/inference.py).
 
 ### Sakana Example
 
@@ -171,7 +151,26 @@ The Sakana example trains on a generated 3D `SAKANA AI` voxel asset and includes
 ```bash
 make train-sakana-modal
 make visualize-sakana-damage
-make visualize-sakana-recovery-gif
+make visualize-sakana-damage-recovery-gif
+make visualize-sakana-seed-recovery-gif
 ```
 
-The visualization targets load the Hugging Face model repo by default. The recovery GIF applies multiple deterministic damage spots, repeatedly predicts damage directions, and adds repaired voxels back into the shape. See [`examples/sakana/README.md`](./examples/sakana/README.md) for the debug overfit command and more details.
+The visualization targets load the Hugging Face model repo by default. Recovery GIFs can start from deterministic damage spots or from a small seed of live cells. See [`examples/sakana/README.md`](./examples/sakana/README.md) for the debug overfit command and more details.
+
+### Recovery GIFs
+
+Render recovery on a ShapeNet sample:
+
+```bash
+make visualize-shapenet-recovery-gif
+```
+
+Render generated default shapes:
+
+```bash
+make visualize-table-recovery-gif
+make visualize-chair-recovery-gif
+make visualize-plane-recovery-gif
+```
+
+For ShapeNet, set `SHAPENET_RECOVERY_CATEGORY` or `SHAPENET_RECOVERY_SAMPLE_INDEX` to choose a specific sample. For generated shapes, set `DEFAULT_SHAPE_RECOVERY_SHAPE=table|chair|plane` on `make visualize-default-shape-recovery-gif`.

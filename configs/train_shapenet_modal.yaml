@@ -49,7 +49,8 @@ training:
   batch_size: 2
   lr: 0.0002
   iterations_per_epoch: 100
-  steps_per_sample: 64
+  min_steps_per_sample: 96
+  max_steps_per_sample: 128
   damage_loss_weight: 1.0
   class_loss_weight: 1.0
   damage_class_weight: 25.0
@@ -68,7 +69,7 @@ training:
   wandb_log_gradient_sums: true
   wandb_gradient_log_freq: 1
 output:
-  checkpoint_dir: combined_shapenet_nca_models
+  save_dir: combined_shapenet_nca_models
   save_frequency: 20
   validate_frequency: 1
   repo_id: shyamsn97/shapenet-cube-regen-combined-hdim-48

@@ -29,7 +29,7 @@ dataset:
   augment_rotations: false
 model:
   type: combined
-  num_hidden_channels: 24
+  num_hidden_channels: 20
   num_damage_directions: 7
   clip_range: 64.0
   use_tanh: false
@@ -37,9 +37,10 @@ model:
 training:
   epochs: 500
   batch_size: 16
-  lr: 0.0005
+  lr: 0.001
   iterations_per_epoch: 100
-  steps_per_sample: 96
+  min_steps_per_sample: 96
+  max_steps_per_sample: 128
   damage_loss_weight: 1.0
   class_loss_weight: 1.0
   damage_class_weight: 25.0
@@ -57,8 +58,8 @@ training:
   wandb_log_gradient_sums: true
   wandb_gradient_log_freq: 1
 output:
-  checkpoint_dir: combined_nca_models
+  save_dir: combined_nca_models
   save_frequency: 10
   validate_frequency: 1
-  repo_id: shyamsn97/cube-regen-combined
+  repo_id: shyamsn97/cube-regen-combined-hdim-20
   repo_type: model

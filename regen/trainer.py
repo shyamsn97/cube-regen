@@ -1,34 +1,40 @@
 import os
 import time
+from importlib import import_module
+from typing import Dict, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
-
-# Combine images side by side
 from PIL import Image
 from torch.utils.data import DataLoader
 
 from regen.base_trainer import BaseNCA3DTrainer, ReplayBuffer
-from regen.model import save_weights_to_huggingface
-from regen.utils import plot_voxels, save_weights
+from regen.utils import plot_voxels
 
 __all__ = ["ReplayBuffer", "NCA3DTrainer"]
 
 
 class NCA3DTrainer(BaseNCA3DTrainer):
+    """Single trainer for damage-only and combined damage/classification NCAs."""
+
     def __init__(
         self,
         model,
-        dataset,
+        dataset=None,
+        train_dataset=None,
+        val_dataset=None,
         batch_size=8,
         lr=1e-4,
         iterations_per_epoch=100,
-        steps_per_sample=96,
+        min_steps_per_sample=96,
+        max_steps_per_sample=128,
         buffer_size=1000,
         buffer_sampling_prob=0.5,
         grad_clip=1.0,
         gradient_checkpointing=False,
+        damage_loss_weight=1.0,
+        class_loss_weight=0.0,
         damage_class_weight=1.0,
         damage_loss_type="cross_entropy",
         focal_gamma=2.0,
@@ -41,33 +47,41 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         wandb_log_gradient_sums=True,
         wandb_gradient_log_freq=1,
         save_dir="./nca_models",
-        repo_id="shyamsn97/cube",
+        num_workers=0,
+        validate_frequency=1,
+        repo_id=None,
         repo_type="model",
-        model_repo_id="shyamsn97/cube-regen-damage-detection",
+        trainer_name=None,
     ):
-        """
-        Train a 3D NCA model for damage detection.
+        train_dataset = train_dataset if train_dataset is not None else dataset
+        if train_dataset is None:
+            raise ValueError("NCA3DTrainer requires `dataset` or `train_dataset`.")
 
-        Args:
-            model: The NCA3DDamageDetection model
-            dataset: Dataset with 3D shapes and damage labels
-            batch_size: Training batch size
-            lr: Learning rate
-            iterations_per_epoch: Number of iterations per epoch
-            steps_per_sample: Number of NCA steps to run per sample
-            buffer_size: Size of the replay buffer
-            buffer_sampling_prob: Probability of sampling from buffer vs. from scratch
-            device: Device to train on (cpu or cuda)
-            save_dir: Directory to save models
-            repo_id: Repository ID for weights
-        """
-        self.dataset = dataset
+        self.dataset = train_dataset
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.has_class_head = bool(getattr(model, "has_class_head", False))
+        self.trainer_name = trainer_name or "NCA3DTrainer"
+        self.save_dir = save_dir
+        self.damage_loss_weight = damage_loss_weight
+        self.class_loss_weight = class_loss_weight
+        self.damage_class_weight = damage_class_weight
+        self.damage_loss_type = damage_loss_type
+        self.focal_gamma = focal_gamma
+        self.validate_frequency = validate_frequency
+        self.repo_id = repo_id
+        self.repo_type = repo_type
+        self.best_val_loss = float("inf")
+        self.train_losses = []
+        self.val_losses = []
+
         super().__init__(
             model=model,
             batch_size=batch_size,
             lr=lr,
             iterations_per_epoch=iterations_per_epoch,
-            steps_per_sample=steps_per_sample,
+            min_steps_per_sample=min_steps_per_sample,
+            max_steps_per_sample=max_steps_per_sample,
             buffer_size=buffer_size,
             buffer_sampling_prob=buffer_sampling_prob,
             device=device,
@@ -76,25 +90,30 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             wandb_project=wandb_project,
             wandb_run_name=wandb_run_name,
             wandb_config={
-                "trainer": "NCA3DTrainer",
+                "trainer": self.trainer_name,
                 "optimizer": "Adam",
                 "learning_rate": lr,
                 "batch_size": batch_size,
                 "iterations_per_epoch": iterations_per_epoch,
-                "steps_per_sample": steps_per_sample,
+                "min_steps_per_sample": min_steps_per_sample,
+                "max_steps_per_sample": max_steps_per_sample,
                 "buffer_size": buffer_size,
                 "buffer_sampling_prob": buffer_sampling_prob,
                 "grad_clip": grad_clip,
                 "gradient_checkpointing": gradient_checkpointing,
+                "damage_loss_weight": damage_loss_weight,
+                "class_loss_weight": class_loss_weight,
                 "damage_class_weight": damage_class_weight,
                 "damage_loss_type": damage_loss_type,
                 "focal_gamma": focal_gamma,
                 "model": model.get_config(),
-                "dataset_size": len(dataset),
-                "save_dir": save_dir,
+                "train_dataset_size": len(train_dataset),
+                "val_dataset_size": len(val_dataset) if val_dataset is not None else 0,
+                "num_workers": num_workers,
+                "validate_frequency": validate_frequency,
+                "save_dir": self.save_dir,
                 "repo_id": repo_id,
                 "repo_type": repo_type,
-                "model_repo_id": model_repo_id,
             },
             wandb_watch=wandb_watch,
             wandb_watch_log=wandb_watch_log,
@@ -102,87 +121,92 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             wandb_log_gradient_sums=wandb_log_gradient_sums,
             wandb_gradient_log_freq=wandb_gradient_log_freq,
         )
-        self.save_dir = save_dir
-        self.damage_class_weight = damage_class_weight
-        self.damage_loss_type = damage_loss_type
-        self.focal_gamma = focal_gamma
 
-        # Initialize loss function (ignore predictions for "dead" cells)
-        # Use class weights to emphasize damage indices (1-6) more than no-damage (0)
         damage_weights = torch.ones(self.model.num_damage_directions)
         damage_weights[1:] = damage_class_weight
-        self.loss_fn = nn.CrossEntropyLoss(
-            weight=damage_weights.to(self.device), reduction="none"
+        self.damage_loss_fn = nn.CrossEntropyLoss(
+            weight=damage_weights.to(self.device),
+            reduction="none",
         )
+        # Backwards compatible name used by older damage-only call sites.
+        self.loss_fn = self.damage_loss_fn
+        self.class_loss_fn = nn.CrossEntropyLoss()
 
-        # Create dataloader
-        self.set_train_dataset(dataset)
+        self.set_train_dataset(train_dataset, num_workers=num_workers)
+        self.val_loader = self.make_eval_loader(val_dataset, num_workers=num_workers)
+        os.makedirs(self.save_dir, exist_ok=True)
 
-        # Initialize metrics tracking
-        self.train_losses = []
-        self.val_losses = []
-        self.repo_id = repo_id
-        self.repo_type = repo_type
-        self.model_repo_id = model_repo_id
-        # Create save directory if it doesn't exist
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+    def replay_samples_per_fresh_batch(self):
+        return 2 if not self.has_class_head else 1
 
-    def loss_function(self, predictions, targets, final_state):
-        """
-        Custom loss function that ignores predictions for "dead" cells.
+    def loss_function(self, first, second, third):
+        """Compatibility wrapper for the old damage and combined trainer APIs."""
+        if first.shape[-1] == self.model.channel_n:
+            return self.loss_and_metrics(first, second, third)
 
-        Args:
-            predictions: Model predictions with shape [batch, depth, height, width, num_classes]
-            targets: Ground truth damage labels [batch, depth, height, width]
-            structure_mask: Binary mask indicating "alive" cells [batch, depth, height, width, 1]
+        damage_loss = self.masked_damage_loss(
+            self.damage_loss_fn,
+            first,
+            second,
+            third,
+            loss_type=self.damage_loss_type,
+            focal_gamma=self.focal_gamma,
+        )
+        if not self.model.use_tanh:
+            damage_loss = damage_loss + self.clipping_loss(third)
+        return damage_loss
 
-        Returns:
-            loss: Mean loss over alive cells
-        """
-        masked_loss = self.masked_damage_loss(
-            self.loss_fn,
-            predictions,
-            targets,
+    def loss_and_metrics(self, final_state, damage_directions, labels):
+        damage_logits = self.model.classify(final_state)
+        damage_loss = self.masked_damage_loss(
+            self.damage_loss_fn,
+            damage_logits,
+            damage_directions,
             final_state,
             loss_type=self.damage_loss_type,
             focal_gamma=self.focal_gamma,
         )
+        loss = self.damage_loss_weight * damage_loss
+
+        class_loss = None
+        class_accuracy = None
+        if self.has_class_head:
+            class_logits = self.model.classify_shape(final_state)
+            class_loss = self.class_loss_fn(class_logits, labels)
+            class_predictions = torch.argmax(class_logits, dim=-1)
+            class_accuracy = (class_predictions == labels).float().mean()
+            loss = loss + self.class_loss_weight * class_loss
 
         if not self.model.use_tanh:
-            masked_loss += self.clipping_loss(final_state)
+            loss = loss + self.clipping_loss(final_state)
 
-        return masked_loss
-
-    def replay_samples_per_fresh_batch(self):
-        return 2
-
-    def loss_and_metrics(self, final_state, damage_directions, labels):
-        del labels
-        predictions = self.model.classify(final_state)
-        loss = self.loss_function(
-            predictions,
+        damage_accuracy = self.damage_accuracy(
+            damage_logits,
             damage_directions,
             final_state,
         )
-        accuracy = self.damage_accuracy(predictions, damage_directions, final_state)
         damaged_accuracy = self.damaged_accuracy(
-            predictions,
+            damage_logits,
             damage_directions,
             final_state,
         )
         metrics = {
             "loss": loss.detach(),
-            "full_accuracy": accuracy.detach(),
-            "damage_accuracy": accuracy.detach(),
+            "damage_loss": damage_loss.detach(),
+            "full_accuracy": damage_accuracy.detach(),
+            "damage_accuracy": damage_accuracy.detach(),
             "damaged_accuracy": damaged_accuracy.detach(),
             "damage_boundary_accuracy": damaged_accuracy.detach(),
         }
+        if class_loss is not None:
+            metrics["class_loss"] = class_loss.detach()
+        if class_accuracy is not None:
+            metrics["class_accuracy"] = class_accuracy.detach()
         metrics.update(
             {
                 key: value.detach()
                 for key, value in self.damage_diagnostics(
-                    predictions,
+                    damage_logits,
                     damage_directions,
                     final_state,
                 ).items()
@@ -190,186 +214,294 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         )
         return loss, metrics
 
-    def log_train_step_metrics(self, metrics, step):
-        self.log_wandb(
-            {f"train_step/{key}": value for key, value in metrics.items()},
-            step=step,
-        )
-
     def progress_postfix(self, averages):
-        return {
+        postfix = {
             "loss": f"{averages.get('loss', 0.0):.4f}",
-            "acc": f"{averages.get('full_accuracy', 0.0):.4f}",
+            "acc": f"{averages.get('damage_accuracy', 0.0):.4f}",
             "dmg_acc": f"{averages.get('damaged_accuracy', 0.0):.4f}",
         }
+        if self.has_class_head:
+            postfix["cls_acc"] = f"{averages.get('class_accuracy', 0.0):.4f}"
+        return postfix
 
-    def save_model(self, epoch, loss):
-        """Save the model checkpoint."""
+    @torch.no_grad()
+    def validate(self) -> Optional[Dict[str, float]]:
+        if self.val_loader is None:
+            return None
+
+        self.model.eval()
+        totals = {}
+        batch_count = 0
+        for batch in self.val_loader:
+            structures, damage_directions, labels = self.prepare_damage_batch(batch)
+            states = self.model.initialize(structures)
+            final_state, _ = self.run_nca(states, self.rollout_labels(labels))
+            _, metrics = self.loss_and_metrics(final_state, damage_directions, labels)
+            batch_count += 1
+            for key, value in self.metric_items(metrics).items():
+                totals[key] = totals.get(key, 0.0) + value
+
+        return {key: value / batch_count for key, value in totals.items()}
+
+    @torch.no_grad()
+    def evaluate_damage_dataset(self):
+        self.model.eval()
+        correct = 0
+        total = 0
+        damaged_correct = 0
+        damaged_total = 0
+        for batch in DataLoader(self.dataset, batch_size=self.batch_size):
+            damage_mask, damage_direction, label = self.prepare_damage_batch(batch)
+            state = self.model.initialize(damage_mask).to(self.device)
+            state, _ = self.run_nca(state, self.rollout_labels(label))
+            predictions = self.model.classify(state)
+            predicted_labels = torch.argmax(predictions, dim=-1)
+
+            total += damage_direction.numel()
+            correct += (predicted_labels == damage_direction).sum().item()
+            damaged_mask = damage_direction > 0
+            damaged_total += damaged_mask.sum().item()
+            damaged_correct += (
+                ((predicted_labels == damage_direction) & damaged_mask).sum().item()
+            )
+
+        self.model.train()
+        return {
+            "accuracy": 100 * correct / total if total > 0 else 0.0,
+            "damaged_accuracy": (
+                100 * damaged_correct / damaged_total if damaged_total > 0 else 0.0
+            ),
+        }
+
+    def save_model(
+        self,
+        epoch,
+        loss,
+        metrics: Optional[Dict[str, float]] = None,
+        is_best=False,
+    ):
+        metrics = metrics or {"loss": loss}
         print(
-            f"Saving damage checkpoint for epoch {epoch} "
+            f"Saving checkpoint for epoch {epoch} "
             f"(loss={loss:.4f}) to {self.save_dir}"
         )
-        checkpoint = self.checkpoint_state(epoch, {"loss": loss})
-        checkpoint_path = f"{self.save_dir}/nca_epoch_{epoch}_loss_{loss:.4f}.pt"
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Saved local checkpoint: {checkpoint_path}")
-        print(
-            "Uploading damage text/torch weights to "
-            f"Hugging Face {self.repo_type} repo '{self.repo_id}'"
+        checkpoint = self.checkpoint_state(
+            epoch,
+            {
+                "metrics": metrics,
+                "model_config": self.model.get_config(),
+            },
         )
-        save_weights(self.model, epoch, repo_id=self.repo_id, repo_type=self.repo_type)
-        print(
-            "Uploading damage model weights to "
-            f"Hugging Face model repo '{self.model_repo_id}'"
-        )
-        save_weights_to_huggingface(self.model, repo_id=self.model_repo_id)
+        latest_path = os.path.join(self.save_dir, "latest.pt")
+        torch.save(checkpoint, latest_path)
+        print(f"Saved local checkpoint: {latest_path}")
+
+        epoch_path = os.path.join(self.save_dir, f"epoch_{epoch}.pt")
+        torch.save(checkpoint, epoch_path)
+        print(f"Saved local checkpoint: {epoch_path}")
+
+        pretrained_paths = self.model.save_pretrained(self.save_dir)
+        print(f"Saved pretrained model: {pretrained_paths}")
+
+        if is_best:
+            best_path = os.path.join(self.save_dir, "best.pt")
+            torch.save(checkpoint, best_path)
+            print(f"Saved best checkpoint: {best_path}")
+
+        if self.repo_id:
+            print(f"Uploading pretrained model to Hugging Face: {self.repo_id}")
+            self.model.save_pretrained(
+                self.repo_id,
+                push_to_hub=True,
+                repo_type=self.repo_type,
+                commit_message=f"Save model for epoch {epoch}",
+            )
+        else:
+            print("No Hugging Face repo configured for upload.")
 
     def train(self, epochs, save_frequency=5, visualization_frequency=10):
-        """
-        Run the full training loop.
-
-        Args:
-            epochs: Number of epochs to train
-            val_dataset: Optional validation dataset
-            save_frequency: How often to save model checkpoints
-            visualization_frequency: How often to visualize results
-        """
-        from torch.utils.tensorboard import SummaryWriter
-
         self.init_wandb()
-        self.writer = SummaryWriter(log_dir=f"{self.save_dir}/tensorboard")
+        writer = None
+        if not self.has_class_head:
+            try:
+                tensorboard = import_module("torch.utils.tensorboard")
+                writer = tensorboard.SummaryWriter(
+                    log_dir=f"{self.save_dir}/tensorboard"
+                )
+            except ImportError:
+                print("TensorBoard is not installed; skipping tensorboard logging.")
 
         for epoch in range(epochs):
             start_time = time.time()
-
-            # Training
             train_metrics = self.train_epoch(epoch)
             train_loss = train_metrics["loss"]
             self.train_losses.append(train_loss)
 
-            # Calculate accuracy
-            self.model.eval()
-            correct = 0
-            total = 0
-            damaged_correct = 0
-            damaged_total = 0
-            with torch.no_grad():
-                for batch in DataLoader(self.dataset, batch_size=self.batch_size):
-                    damage_mask, damage_direction, label = self.prepare_damage_batch(
-                        batch
-                    )
-                    # Initialize state and run NCA
-                    state = self.model.initialize(damage_mask).to(self.device)
-                    state, _ = self.run_nca(state, label)
+            val_metrics = self._maybe_validate(epoch, epochs)
+            if val_metrics is not None:
+                self.val_losses.append(val_metrics["loss"])
 
-                    # Get predictions
-                    predictions = self.model.classify(state)
-                    predicted_labels = torch.argmax(predictions, dim=-1)
+            eval_metrics = None
+            if not self.has_class_head:
+                eval_metrics = self.evaluate_damage_dataset()
 
-                    # Calculate accuracy
-                    total += damage_direction.numel()
-                    correct += (predicted_labels == damage_direction).sum().item()
-                    damaged_mask = damage_direction > 0
-                    damaged_total += damaged_mask.sum().item()
-                    damaged_correct += (
-                        ((predicted_labels == damage_direction) & damaged_mask)
-                        .sum()
-                        .item()
-                    )
-
-            accuracy = 100 * correct / total
-            damaged_accuracy = (
-                100 * damaged_correct / damaged_total if damaged_total > 0 else 0.0
+            elapsed = time.time() - start_time
+            self._print_epoch_summary(
+                epoch, train_metrics, val_metrics, eval_metrics, elapsed
             )
-            self.model.train()
-
-            print(
-                f"Epoch {epoch} - Train Loss: {train_loss:.4f}, "
-                f"Train Alive Acc: {train_metrics.get('damage_accuracy', 0.0):.4f}, "
-                f"Train Damaged Acc: {train_metrics.get('damaged_accuracy', 0.0):.4f}, "
-                f"Eval Accuracy: {accuracy:.2f}%, "
-                f"Eval Damaged Accuracy: {damaged_accuracy:.2f}%, "
-                f"Time: {time.time() - start_time:.2f}s"
+            self._log_epoch_metrics(
+                epoch, train_metrics, val_metrics, eval_metrics, elapsed
             )
-            # Log metrics to Weights & Biases
-            self.log_wandb(
-                {
-                    "epoch": epoch,
-                    "train_loss": train_loss,
-                    "train_alive_accuracy": train_metrics.get("damage_accuracy", 0.0),
-                    "train_damaged_accuracy": train_metrics.get(
-                        "damaged_accuracy", 0.0
-                    ),
-                    "accuracy": accuracy,
-                    "damaged_accuracy": damaged_accuracy,
-                    "epoch_time": time.time() - start_time,
-                },
-                step=self.global_step,
-            )
+            self._write_tensorboard(writer, epoch, train_metrics, eval_metrics, elapsed)
 
-            # Log metrics to tensorboard
-            self.writer.add_scalar("Loss/train", train_loss, epoch)
-            self.writer.add_scalar(
-                "Accuracy/train_alive",
-                train_metrics.get("damage_accuracy", 0.0),
-                epoch,
+            should_save = save_frequency > 0 and (
+                epoch % save_frequency == 0 or epoch == epochs - 1
             )
-            self.writer.add_scalar(
-                "Accuracy/train_damaged",
-                train_metrics.get("damaged_accuracy", 0.0),
-                epoch,
-            )
-            self.writer.add_scalar("Accuracy/train", accuracy, epoch)
-            self.writer.add_scalar("Accuracy/damaged", damaged_accuracy, epoch)
-            self.writer.add_scalar("Time/epoch", time.time() - start_time, epoch)
+            if should_save:
+                monitor_loss = val_metrics["loss"] if val_metrics else train_loss
+                is_best = monitor_loss < self.best_val_loss
+                if is_best:
+                    self.best_val_loss = monitor_loss
+                self.save_model(
+                    epoch,
+                    monitor_loss if self.has_class_head else train_loss,
+                    metrics=self._prefixed_metrics(train_metrics, val_metrics),
+                    is_best=is_best,
+                )
 
-            # Save model
-            if epoch % save_frequency == 0 or epoch == epochs - 1:
-                self.save_model(epoch, train_loss)
-                # # Log model to wandb
-                # model_path = (
-                #     f"{self.save_dir}/nca_epoch_{epoch}_loss_{train_loss:.4f}.pt"
-                # )
-                # wandb.save(model_path)
-
-            # Visualize results
-            if epoch % visualization_frequency == 0 or epoch == epochs - 1:
+            if (
+                writer is not None
+                and visualization_frequency > 0
+                and (epoch % visualization_frequency == 0 or epoch == epochs - 1)
+            ):
                 img = self.visualize_results(epoch)
                 if self.wandb_initialized:
                     self.log_wandb(
                         {"visualization": self.wandb.Image(img), "epoch": epoch},
                         step=self.global_step,
                     )
-                self.writer.add_image(
+                writer.add_image(
                     "Visualization", np.array(img), epoch, dataformats="HWC"
                 )
 
+    def _maybe_validate(self, epoch, epochs):
+        should_validate = (
+            self.val_loader is not None
+            and self.validate_frequency > 0
+            and (epoch % self.validate_frequency == 0 or epoch == epochs - 1)
+        )
+        if not should_validate:
+            return None
+        return self.validate()
+
+    def _prefixed_metrics(self, train_metrics, val_metrics):
+        metrics = {f"train_{key}": value for key, value in train_metrics.items()}
+        if val_metrics:
+            metrics.update({f"val_{key}": value for key, value in val_metrics.items()})
+        return metrics
+
+    def _print_epoch_summary(
+        self,
+        epoch,
+        train_metrics,
+        val_metrics,
+        eval_metrics,
+        elapsed,
+    ):
+        parts = [
+            f"Epoch {epoch}",
+            f"train_loss={train_metrics['loss']:.4f}",
+            f"train_full_acc={train_metrics.get('damage_accuracy', 0.0):.3f}",
+            f"train_damage_acc={train_metrics.get('damaged_accuracy', 0.0):.3f}",
+        ]
+        if self.has_class_head:
+            parts.append(
+                f"train_class_acc={train_metrics.get('class_accuracy', 0.0):.3f}"
+            )
+        if val_metrics is not None:
+            parts.extend(
+                [
+                    f"val_loss={val_metrics['loss']:.4f}",
+                    f"val_full_acc={val_metrics.get('damage_accuracy', 0.0):.3f}",
+                    f"val_damage_acc={val_metrics.get('damaged_accuracy', 0.0):.3f}",
+                ]
+            )
+            if self.has_class_head:
+                parts.append(
+                    f"val_class_acc={val_metrics.get('class_accuracy', 0.0):.3f}"
+                )
+        if eval_metrics is not None:
+            parts.extend(
+                [
+                    f"eval_acc={eval_metrics['accuracy']:.2f}%",
+                    f"eval_damage_acc={eval_metrics['damaged_accuracy']:.2f}%",
+                ]
+            )
+        parts.append(f"time={elapsed:.1f}s")
+        print(" | ".join(parts))
+
+    def _log_epoch_metrics(
+        self,
+        epoch,
+        train_metrics,
+        val_metrics,
+        eval_metrics,
+        elapsed,
+    ):
+        metrics = {
+            "epoch": epoch,
+            "epoch_time": elapsed,
+            **{f"train_{key}": value for key, value in train_metrics.items()},
+        }
+        if val_metrics:
+            metrics.update({f"val_{key}": value for key, value in val_metrics.items()})
+        if eval_metrics:
+            metrics.update(
+                {
+                    "accuracy": eval_metrics["accuracy"],
+                    "damaged_accuracy": eval_metrics["damaged_accuracy"],
+                }
+            )
+        self.log_wandb(metrics, step=self.global_step)
+
+    def _write_tensorboard(self, writer, epoch, train_metrics, eval_metrics, elapsed):
+        if writer is None:
+            return
+        writer.add_scalar("Loss/train", train_metrics["loss"], epoch)
+        writer.add_scalar(
+            "Accuracy/train_alive",
+            train_metrics.get("damage_accuracy", 0.0),
+            epoch,
+        )
+        writer.add_scalar(
+            "Accuracy/train_damaged",
+            train_metrics.get("damaged_accuracy", 0.0),
+            epoch,
+        )
+        if eval_metrics:
+            writer.add_scalar("Accuracy/train", eval_metrics["accuracy"], epoch)
+            writer.add_scalar(
+                "Accuracy/damaged", eval_metrics["damaged_accuracy"], epoch
+            )
+        writer.add_scalar("Time/epoch", elapsed, epoch)
+
     def visualize_results(self, epoch):
-        """Visualize current model predictions on a sample."""
+        del epoch
         self.model.eval()
 
         with torch.no_grad():
-            # Get a sample
             damage_mask_tensor, damage_direction_tensor, label, _ = self.dataset[0]
-            damage_mask_tensor = damage_mask_tensor.unsqueeze(0)
-            damage_direction_tensor = damage_direction_tensor.unsqueeze(0)
-            label = label.unsqueeze(0)
-            damage_mask_tensor = damage_mask_tensor.to(self.device)
-            damage_direction_tensor = damage_direction_tensor.to(self.device)
-            label = label.to(self.device)
+            damage_mask_tensor = damage_mask_tensor.unsqueeze(0).to(self.device)
+            damage_direction_tensor = damage_direction_tensor.unsqueeze(0).to(
+                self.device
+            )
+            label = label.unsqueeze(0).to(self.device)
 
-            # Initialize state
             state = self.model.initialize(damage_mask_tensor).to(self.device)
-            label = label.to(self.device)
-
-            # Run NCA
-            state, _ = self.run_nca(state, label)
-
-            # Get final predictions
+            state, _ = self.run_nca(state, self.rollout_labels(label))
             predictions = self.model.classify(state)
             predictions = torch.argmax(predictions, dim=-1).detach().cpu().numpy()[0]
 
-            # Convert tensors to numpy arrays and ensure they're properly shaped
             damage_mask = (
                 damage_mask_tensor.squeeze().detach().cpu().numpy().astype(np.uint8)
             )
@@ -380,11 +512,8 @@ class NCA3DTrainer(BaseNCA3DTrainer):
                 .numpy()
                 .astype(np.uint8)
             )
-
-            # Make sure predictions is properly shaped for plot_voxels
             predictions_np = predictions.astype(np.uint8)
 
-            # Generate visualization images
             true_damage_img = plot_voxels(
                 live_mask=damage_mask,
                 damage_direction=damage_direction,
@@ -399,5 +528,4 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             combined_img = Image.new("RGBA", (combined_width, combined_height))
             combined_img.paste(true_damage_img, (0, 0))
             combined_img.paste(predicted_damage_img, (true_damage_img.width, 0))
-
             return combined_img
