@@ -23,11 +23,11 @@ from recovery_common import (  # noqa: E402
 from regen.train_config import load_training_data  # noqa: E402
 
 DEFAULT_CLASS_NAMES = {
-    0: "chair",
-    1: "table",
-    2: "plane",
-    3: "car",
-    4: "sofa",
+    0: "plane",
+    1: "chair",
+    2: "car",
+    3: "table",
+    4: "cabinet",
     5: "lamp",
     6: "bench",
 }
@@ -60,10 +60,10 @@ def parse_args():
     )
     parser.add_argument(
         "--shape-seed",
-        default=None,
+        default=0,
         help="Override dataset.shape_seed for selecting the object per class.",
     )
-    parser.add_argument("--sample-index", type=int, default=0)
+    parser.add_argument("--sample-index", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     return parser.parse_args()
 

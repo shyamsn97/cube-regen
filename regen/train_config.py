@@ -215,6 +215,20 @@ def train_combined_from_config(
             train_indices=train_indices,
             val_indices=val_indices,
         ),
+        recovery_eval_frequency=training_config.get("recovery_eval_frequency", 0),
+        recovery_eval_samples=training_config.get("recovery_eval_samples", 0),
+        recovery_eval_iterations=training_config.get("recovery_eval_iterations", 24),
+        recovery_eval_prediction_steps=training_config.get(
+            "recovery_eval_prediction_steps"
+        ),
+        recovery_eval_start_mode=training_config.get(
+            "recovery_eval_start_mode",
+            "sample",
+        ),
+        recovery_eval_seed_proportion=training_config.get(
+            "recovery_eval_seed_proportion",
+            0.15,
+        ),
     )
 
     if class_to_idx is not None:
@@ -292,6 +306,20 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
         repo_id=output_config.get("repo_id"),
         repo_type=output_config.get("repo_type", "model"),
         experiment_config=wandb_experiment_config(config, labels),
+        recovery_eval_frequency=training_config.get("recovery_eval_frequency", 0),
+        recovery_eval_samples=training_config.get("recovery_eval_samples", 0),
+        recovery_eval_iterations=training_config.get("recovery_eval_iterations", 24),
+        recovery_eval_prediction_steps=training_config.get(
+            "recovery_eval_prediction_steps"
+        ),
+        recovery_eval_start_mode=training_config.get(
+            "recovery_eval_start_mode",
+            "sample",
+        ),
+        recovery_eval_seed_proportion=training_config.get(
+            "recovery_eval_seed_proportion",
+            0.15,
+        ),
     )
     trainer.train(
         epochs=training_config.get("epochs", 500),
@@ -319,6 +347,23 @@ def make_dynamic_damage_dataset(
         ),
         random_proportion_range=tuple(
             dataset_config.get("random_proportion_range", [0.1, 0.2])
+        ),
+        recovery_seed_proportion_range=tuple(
+            dataset_config.get("recovery_seed_proportion_range", [0.1, 0.9])
+        ),
+        center_seed_augment_damage_types=dataset_config.get(
+            "center_seed_augment_damage_types",
+            ["sphere", "cube", "random"],
+        ),
+        center_seed_augment_sites_range=tuple(
+            dataset_config.get("center_seed_augment_sites_range", [0, 2])
+        ),
+        center_seed_augment_proportion_range=tuple(
+            dataset_config.get("center_seed_augment_proportion_range", [0.02, 0.12])
+        ),
+        center_seed_augment_max_attempts=dataset_config.get(
+            "center_seed_augment_max_attempts",
+            8,
         ),
         num_damage_sites_range=tuple(
             dataset_config.get("num_damage_sites_range", [1, 1])

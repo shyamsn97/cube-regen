@@ -91,6 +91,16 @@ def add_common_recovery_args(parser):
         default=64,
         help="Number of original live cells kept when --recovery-start-mode=seed.",
     )
+    parser.add_argument(
+        "--recovery-seed-proportion",
+        type=float,
+        default=None,
+        help=(
+            "Seed a fraction of each shape's live cells instead of a fixed count. "
+            "Robust across shapes of very different sizes; overrides "
+            "--recovery-seed-cells when set."
+        ),
+    )
     parser.add_argument("--recovery-confidence-threshold", type=float, default=0.0)
     parser.add_argument("--recovery-confidence-window", type=int, default=12)
     parser.add_argument("--recovery-confidence-required", type=int, default=6)
@@ -230,7 +240,20 @@ def run_recovery(model, original, damaged, args, description):
 def recovery_start(original, damaged, args):
     if args.recovery_start_mode == "damage":
         return damaged
-    return seed_live_cells(original, args.recovery_seed_cells)
+    return seed_live_cells(original, seed_cell_count(original, args))
+
+
+def seed_cell_count(original, args):
+    num_live = int((original == 1).sum())
+    if num_live == 0:
+        raise ValueError("Cannot seed recovery from an empty voxel grid.")
+    proportion = getattr(args, "recovery_seed_proportion", None)
+    if proportion is not None:
+        count = int(round(proportion * num_live))
+    else:
+        count = int(args.recovery_seed_cells)
+    # Always leave at least one missing cell so recovery has something to do.
+    return max(1, min(count, num_live - 1))
 
 
 def seed_live_cells(voxel, count):
@@ -289,6 +312,23 @@ def make_recovery_dataset(config, shapes, labels, seed):
         damage_types=dataset_config.get("damage_types", ["sphere", "cube"]),
         random_proportion_range=tuple(
             dataset_config.get("random_proportion_range", [0.1, 0.2])
+        ),
+        recovery_seed_proportion_range=tuple(
+            dataset_config.get("recovery_seed_proportion_range", [0.1, 0.9])
+        ),
+        center_seed_augment_damage_types=dataset_config.get(
+            "center_seed_augment_damage_types",
+            ["sphere", "cube", "random"],
+        ),
+        center_seed_augment_sites_range=tuple(
+            dataset_config.get("center_seed_augment_sites_range", [0, 2])
+        ),
+        center_seed_augment_proportion_range=tuple(
+            dataset_config.get("center_seed_augment_proportion_range", [0.02, 0.12])
+        ),
+        center_seed_augment_max_attempts=dataset_config.get(
+            "center_seed_augment_max_attempts",
+            8,
         ),
         num_damage_sites_range=tuple(
             dataset_config.get("num_damage_sites_range", [1, 1])

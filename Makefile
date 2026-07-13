@@ -8,8 +8,10 @@
 	shapenet-subset-download shapenet-damage-subset-download \
 	visualize-shapenet-predictions visualize-damage-prediction \
 	visualize-shape-conditioned-recovery-gif visualize-shape-conditioned-seed-recovery-gif \
+	visualize-shape-conditioned-recovery-all visualize-shape-conditioned-seed-recovery-all \
 	visualize-shapenet-recovery-gif visualize-shapenet-seed-recovery-gif \
 	visualize-combined-recovery-gif visualize-combined-seed-recovery-gif \
+	visualize-combined-recovery-all visualize-combined-seed-recovery-all \
 	visualize-sakana-damage visualize-sakana-recovery-gif \
 	visualize-sakana-damage-recovery-gif visualize-sakana-seed-recovery-gif \
 	train-sakana train-sakana-modal
@@ -72,30 +74,33 @@ SHAPENET_RECOVERY_OUTPUT_DIR ?= examples/recovery/shapenet
 SHAPENET_RECOVERY_OUTPUT ?= shapenet_recovery.gif
 SHAPENET_SEED_RECOVERY_OUTPUT ?= shapenet_seed_recovery.gif
 SHAPENET_RECOVERY_CATEGORY ?=
-SHAPENET_RECOVERY_SAMPLE_INDEX ?= 2
-SHAPE_CONDITIONED_RECOVERY_REPO ?= shyamsn97/cube-regen-shape-conditioned-damage-hdim-64
+SHAPENET_RECOVERY_SAMPLE_INDEX ?= 1
+SHAPE_CONDITIONED_RECOVERY_REPO ?= shyamsn97/cube-regen-shape-conditioned-damage-hdim-full-64
 SHAPE_CONDITIONED_RECOVERY_CONFIG ?= $(DAMAGE_SHAPE_CONDITIONED_MODAL_CONFIG)
 SHAPE_CONDITIONED_RECOVERY_OUTPUT_DIR ?= examples/recovery/shape_conditioned
-SHAPE_CONDITIONED_RECOVERY_OUTPUT ?= shape_conditioned_recovery.gif
-SHAPE_CONDITIONED_SEED_RECOVERY_OUTPUT ?= shape_conditioned_seed_recovery.gif
+SHAPE_CONDITIONED_RECOVERY_OUTPUT ?= shape_conditioned_class_$(SHAPE_CONDITIONED_RECOVERY_CLASS_LABEL)_sample_$(SHAPE_CONDITIONED_RECOVERY_SAMPLE_INDEX)_recovery.gif
+SHAPE_CONDITIONED_SEED_RECOVERY_OUTPUT ?= shape_conditioned_class_$(SHAPE_CONDITIONED_RECOVERY_CLASS_LABEL)_sample_$(SHAPE_CONDITIONED_RECOVERY_SAMPLE_INDEX)_seed_recovery.gif
 SHAPE_CONDITIONED_RECOVERY_CLASS_NAME ?=
 SHAPE_CONDITIONED_RECOVERY_CLASS_LABEL ?= 3
 SHAPE_CONDITIONED_RECOVERY_SHAPE_SEED ?= 
 SHAPE_CONDITIONED_RECOVERY_SAMPLE_INDEX ?= 0
-SHAPE_CONDITIONED_RECOVERY_DEVICE ?= cpu
+SHAPE_CONDITIONED_RECOVERY_DEVICE ?= mps
 SHAPE_CONDITIONED_USE_ADAPTIVE_POOLING ?= false
 SHAPE_CONDITIONED_RECOVERY_DAMAGE_TYPES ?= sphere cube
 SHAPE_CONDITIONED_RECOVERY_DAMAGE_RADIUS_RANGE ?= 1 3
 SHAPE_CONDITIONED_RECOVERY_NUM_DAMAGE_SITES_RANGE ?= 2 3
 SHAPE_CONDITIONED_RECOVERY_MIN_DAMAGE_TARGET_CELLS ?= 8
 SHAPE_CONDITIONED_RECOVERY_MAX_DAMAGE_ATTEMPTS ?= 10
+# One representative shape per class as CLASS:SAMPLE_INDEX pairs.
+# 0 plane (14), 1 chair, 2 car, 3 table (round=104), 4 cabinet (5), 5 lamp, 6 bench.
+SHAPE_CONDITIONED_RECOVERY_SAMPLES ?= 0:14 1:0 2:0 3:104 4:5 5:0 6:0
 COMBINED_RECOVERY_REPO ?= shyamsn97/cube-regen-combined-hdim-20
 COMBINED_RECOVERY_CONFIG ?= $(COMBINED_MODAL_CONFIG)
 COMBINED_RECOVERY_OUTPUT_DIR ?= examples/recovery/combined
-COMBINED_RECOVERY_OUTPUT ?= combined_recovery.gif
-COMBINED_SEED_RECOVERY_OUTPUT ?= combined_seed_recovery.gif
+COMBINED_RECOVERY_OUTPUT ?= combined_class_$(COMBINED_RECOVERY_CLASS_LABEL)_sample_$(COMBINED_RECOVERY_SAMPLE_INDEX)_recovery.gif
+COMBINED_SEED_RECOVERY_OUTPUT ?= combined_class_$(COMBINED_RECOVERY_CLASS_LABEL)_sample_$(COMBINED_RECOVERY_SAMPLE_INDEX)_seed_recovery.gif
 COMBINED_RECOVERY_CLASS_NAME ?=
-COMBINED_RECOVERY_CLASS_LABEL ?= 3
+COMBINED_RECOVERY_CLASS_LABEL ?= 2
 COMBINED_RECOVERY_SHAPE_SEED ?= 0
 COMBINED_RECOVERY_SAMPLE_INDEX ?= 0
 COMBINED_RECOVERY_DAMAGE_TYPES ?= sphere cube
@@ -104,13 +109,19 @@ COMBINED_RECOVERY_NUM_DAMAGE_SITES_RANGE ?= 2 3
 COMBINED_RECOVERY_MIN_DAMAGE_TARGET_CELLS ?= 8
 COMBINED_RECOVERY_MAX_DAMAGE_ATTEMPTS ?= 10
 COMBINED_RECOVERY_UNCONSTRAINED ?= 1
-RECOVERY_INFERENCE_STEPS ?= 128
-RECOVERY_ITERATIONS ?= 128
+# One representative shape per class as CLASS:SAMPLE_INDEX pairs.
+# 0 plane (14), 1 chair, 2 car, 3 table (round=104), 4 cabinet (5), 5 lamp, 6 bench.
+COMBINED_RECOVERY_SAMPLES ?= 0:14 1:0 2:0 3:104 4:5 5:0 6:0
+RECOVERY_INFERENCE_STEPS ?= 256
+RECOVERY_ITERATIONS ?= 256
 RECOVERY_FRAME_STRIDE ?= 1
 RECOVERY_START_MODE ?= damage
 RECOVERY_SEED_CELLS ?= 64
-RECOVERY_CONFIDENCE_WINDOW ?= 24
-RECOVERY_CONFIDENCE_REQUIRED ?= 20
+# When set (e.g. 0.15), seeds a fraction of each shape's live cells instead of a
+# fixed count. Robust for sweeps across very differently-sized shapes.
+RECOVERY_SEED_PROPORTION ?= 0.1
+RECOVERY_CONFIDENCE_WINDOW ?= 8
+RECOVERY_CONFIDENCE_REQUIRED ?= 8
 RECOVERY_NO_PROGRESS_PATIENCE ?= 32
 RECOVERY_EXTRA_STEPS_AFTER_COMPLETE ?= 32
 RECOVERY_CONSENSUS_MIN_VOTES ?= 1
@@ -269,6 +280,7 @@ visualize-shape-conditioned-recovery-gif: ## render NPY sample recovery with sha
 		--recovery-frame-stride $(RECOVERY_FRAME_STRIDE) \
 		--recovery-start-mode $(RECOVERY_START_MODE) \
 		--recovery-seed-cells $(RECOVERY_SEED_CELLS) \
+		$(if $(RECOVERY_SEED_PROPORTION),--recovery-seed-proportion $(RECOVERY_SEED_PROPORTION),) \
 		--recovery-confidence-window $(RECOVERY_CONFIDENCE_WINDOW) \
 		--recovery-confidence-required $(RECOVERY_CONFIDENCE_REQUIRED) \
 		--recovery-no-progress-patience $(RECOVERY_NO_PROGRESS_PATIENCE) \
@@ -281,6 +293,25 @@ visualize-shape-conditioned-recovery-gif: ## render NPY sample recovery with sha
 
 visualize-shape-conditioned-seed-recovery-gif: ## render shape-conditioned recovery from seed cells
 	$(MAKE) visualize-shape-conditioned-recovery-gif RECOVERY_START_MODE=seed SHAPE_CONDITIONED_RECOVERY_OUTPUT=$(SHAPE_CONDITIONED_SEED_RECOVERY_OUTPUT)
+
+visualize-shape-conditioned-recovery-all: ## render shape-conditioned recovery for every class in SHAPE_CONDITIONED_RECOVERY_SAMPLES
+	@for pair in $(SHAPE_CONDITIONED_RECOVERY_SAMPLES); do \
+		cls=$${pair%%:*}; idx=$${pair##*:}; \
+		echo "=== shape-conditioned recovery: class $$cls sample $$idx ==="; \
+		$(MAKE) visualize-shape-conditioned-recovery-gif \
+			SHAPE_CONDITIONED_RECOVERY_CLASS_LABEL=$$cls \
+			SHAPE_CONDITIONED_RECOVERY_SAMPLE_INDEX=$$idx || exit $$?; \
+	done
+
+visualize-shape-conditioned-seed-recovery-all: ## render shape-conditioned seed recovery for every class in SHAPE_CONDITIONED_RECOVERY_SAMPLES
+	@for pair in $(SHAPE_CONDITIONED_RECOVERY_SAMPLES); do \
+		cls=$${pair%%:*}; idx=$${pair##*:}; \
+		echo "=== shape-conditioned seed recovery: class $$cls sample $$idx ==="; \
+		$(MAKE) visualize-shape-conditioned-seed-recovery-gif \
+			RECOVERY_SEED_PROPORTION=$(if $(RECOVERY_SEED_PROPORTION),$(RECOVERY_SEED_PROPORTION),0.15) \
+			SHAPE_CONDITIONED_RECOVERY_CLASS_LABEL=$$cls \
+			SHAPE_CONDITIONED_RECOVERY_SAMPLE_INDEX=$$idx || exit $$?; \
+	done
 
 visualize-shapenet-recovery-gif: shapenet-subset-download ## render ShapeNet sample recovery GIF
 	$(PYTHON) $(SHAPENET_RECOVERY_SCRIPT) \
@@ -297,6 +328,7 @@ visualize-shapenet-recovery-gif: shapenet-subset-download ## render ShapeNet sam
 		--recovery-frame-stride $(RECOVERY_FRAME_STRIDE) \
 		--recovery-start-mode $(RECOVERY_START_MODE) \
 		--recovery-seed-cells $(RECOVERY_SEED_CELLS) \
+		$(if $(RECOVERY_SEED_PROPORTION),--recovery-seed-proportion $(RECOVERY_SEED_PROPORTION),) \
 		--recovery-confidence-window $(RECOVERY_CONFIDENCE_WINDOW) \
 		--recovery-confidence-required $(RECOVERY_CONFIDENCE_REQUIRED) \
 		--recovery-no-progress-patience $(RECOVERY_NO_PROGRESS_PATIENCE) \
@@ -329,6 +361,7 @@ visualize-combined-recovery-gif: ## render NPY sample recovery with combined mod
 		--recovery-frame-stride $(RECOVERY_FRAME_STRIDE) \
 		--recovery-start-mode $(RECOVERY_START_MODE) \
 		--recovery-seed-cells $(RECOVERY_SEED_CELLS) \
+		$(if $(RECOVERY_SEED_PROPORTION),--recovery-seed-proportion $(RECOVERY_SEED_PROPORTION),) \
 		--recovery-confidence-window $(RECOVERY_CONFIDENCE_WINDOW) \
 		--recovery-confidence-required $(RECOVERY_CONFIDENCE_REQUIRED) \
 		--recovery-no-progress-patience $(RECOVERY_NO_PROGRESS_PATIENCE) \
@@ -340,6 +373,25 @@ visualize-combined-recovery-gif: ## render NPY sample recovery with combined mod
 
 visualize-combined-seed-recovery-gif: ## render combined model recovery from seed cells
 	$(MAKE) visualize-combined-recovery-gif RECOVERY_START_MODE=seed COMBINED_RECOVERY_OUTPUT=$(COMBINED_SEED_RECOVERY_OUTPUT)
+
+visualize-combined-recovery-all: ## render combined recovery for every class in COMBINED_RECOVERY_SAMPLES
+	@for pair in $(COMBINED_RECOVERY_SAMPLES); do \
+		cls=$${pair%%:*}; idx=$${pair##*:}; \
+		echo "=== combined recovery: class $$cls sample $$idx ==="; \
+		$(MAKE) visualize-combined-recovery-gif \
+			COMBINED_RECOVERY_CLASS_LABEL=$$cls \
+			COMBINED_RECOVERY_SAMPLE_INDEX=$$idx || exit $$?; \
+	done
+
+visualize-combined-seed-recovery-all: ## render combined seed recovery for every class in COMBINED_RECOVERY_SAMPLES
+	@for pair in $(COMBINED_RECOVERY_SAMPLES); do \
+		cls=$${pair%%:*}; idx=$${pair##*:}; \
+		echo "=== combined seed recovery: class $$cls sample $$idx ==="; \
+		$(MAKE) visualize-combined-seed-recovery-gif \
+			RECOVERY_SEED_PROPORTION=$(if $(RECOVERY_SEED_PROPORTION),$(RECOVERY_SEED_PROPORTION),0.15) \
+			COMBINED_RECOVERY_CLASS_LABEL=$$cls \
+			COMBINED_RECOVERY_SAMPLE_INDEX=$$idx || exit $$?; \
+	done
 
 visualize-sakana-damage: ## render Sakana sphere/cube damage inference rows
 	$(PYTHON) $(SAKANA_INFERENCE_SCRIPT) \

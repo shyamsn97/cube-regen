@@ -108,7 +108,7 @@ def run_modal(config):
     }
 
     @app.function(
-        gpu=run_config.get("gpu", "A10G"),
+        gpu=run_config.get("gpu", "H100"),
         image=image,
         secrets=secrets,
         volumes=volumes,

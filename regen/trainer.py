@@ -11,6 +11,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 
 from regen.base_trainer import BaseNCA3DTrainer, ReplayBuffer
+from regen.dataset import centered_subset_mask
 from regen.utils import plot_voxels
 
 __all__ = ["ReplayBuffer", "NCA3DTrainer"]
@@ -68,6 +69,12 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         repo_type="model",
         trainer_name=None,
         experiment_config=None,
+        recovery_eval_frequency=0,
+        recovery_eval_samples=0,
+        recovery_eval_iterations=24,
+        recovery_eval_prediction_steps=None,
+        recovery_eval_start_mode="sample",
+        recovery_eval_seed_proportion=0.15,
     ):
         train_dataset = train_dataset if train_dataset is not None else dataset
         if train_dataset is None:
@@ -87,6 +94,12 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         self.validate_frequency = validate_frequency
         self.repo_id = repo_id
         self.repo_type = repo_type
+        self.recovery_eval_frequency = recovery_eval_frequency
+        self.recovery_eval_samples = recovery_eval_samples
+        self.recovery_eval_iterations = recovery_eval_iterations
+        self.recovery_eval_prediction_steps = recovery_eval_prediction_steps
+        self.recovery_eval_start_mode = recovery_eval_start_mode
+        self.recovery_eval_seed_proportion = recovery_eval_seed_proportion
         self.best_val_loss = float("inf")
         self.train_losses = []
         self.val_losses = []
@@ -131,6 +144,12 @@ class NCA3DTrainer(BaseNCA3DTrainer):
                 "repo_id": repo_id,
                 "repo_type": repo_type,
                 "experiment_config": wandb_safe_config(experiment_config or {}),
+                "recovery_eval_frequency": recovery_eval_frequency,
+                "recovery_eval_samples": recovery_eval_samples,
+                "recovery_eval_iterations": recovery_eval_iterations,
+                "recovery_eval_prediction_steps": recovery_eval_prediction_steps,
+                "recovery_eval_start_mode": recovery_eval_start_mode,
+                "recovery_eval_seed_proportion": recovery_eval_seed_proportion,
             },
             wandb_watch=wandb_watch,
             wandb_watch_log=wandb_watch_log,
@@ -371,6 +390,10 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             eval_metrics = None
             if not self.has_class_head:
                 eval_metrics = self.evaluate_damage_dataset()
+            recovery_metrics = self._maybe_evaluate_recovery(epoch, epochs)
+            if recovery_metrics is not None:
+                eval_metrics = eval_metrics or {}
+                eval_metrics.update(recovery_metrics)
 
             elapsed = time.time() - start_time
             self._print_epoch_summary(
@@ -421,6 +444,69 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             return None
         return self.validate()
 
+    def _maybe_evaluate_recovery(self, epoch, epochs):
+        should_evaluate = (
+            self.recovery_eval_frequency
+            and self.recovery_eval_samples
+            and (epoch % self.recovery_eval_frequency == 0 or epoch == epochs - 1)
+        )
+        if not should_evaluate:
+            return None
+        return self.evaluate_recovery()
+
+    @torch.no_grad()
+    def evaluate_recovery(self):
+        self.model.eval()
+        sample_count = min(self.recovery_eval_samples, len(self.dataset))
+        if sample_count <= 0:
+            return None
+
+        prediction_steps = (
+            self.recovery_eval_prediction_steps or self.max_steps_per_sample
+        )
+        totals = {
+            "recovery_missing": 0.0,
+            "recovery_extra": 0.0,
+            "recovery_added": 0.0,
+            "recovery_recovered_fraction": 0.0,
+        }
+        for idx in range(sample_count):
+            sample = self.dataset[idx]
+            damaged = sample[0]
+            original_np = self.dataset.shapes[idx].astype(np.uint8)
+            damaged_np = damaged.numpy().astype(np.uint8)
+            start_np = self.recovery_eval_start(original_np, damaged_np)
+            initial_missing = int(((original_np == 1) & (start_np == 0)).sum())
+            trajectory = self.model.recover(
+                start_np,
+                original_mask=original_np,
+                steps_per_prediction=prediction_steps,
+                recovery_steps=self.recovery_eval_iterations,
+                show_progress=False,
+            )
+            final_step = trajectory.steps[-1]
+            missing = final_step.missing_count or 0
+            extra = final_step.extra_count or 0
+            recovered = 0.0
+            if initial_missing > 0:
+                recovered = (initial_missing - missing) / initial_missing
+            totals["recovery_missing"] += float(missing)
+            totals["recovery_extra"] += float(extra)
+            totals["recovery_added"] += float(final_step.total_added_count)
+            totals["recovery_recovered_fraction"] += float(recovered)
+
+        self.model.train()
+        return {key: value / sample_count for key, value in totals.items()}
+
+    def recovery_eval_start(self, original_np, damaged_np):
+        if self.recovery_eval_start_mode == "sample":
+            return damaged_np
+        if self.recovery_eval_start_mode == "seed":
+            return centered_subset_mask(original_np, self.recovery_eval_seed_proportion)
+        raise ValueError(
+            f"Unsupported recovery_eval_start_mode: {self.recovery_eval_start_mode}"
+        )
+
     def _prefixed_metrics(self, train_metrics, val_metrics):
         metrics = {f"train_{key}": value for key, value in train_metrics.items()}
         if val_metrics:
@@ -458,12 +544,22 @@ class NCA3DTrainer(BaseNCA3DTrainer):
                     f"val_class_acc={val_metrics.get('class_accuracy', 0.0):.3f}"
                 )
         if eval_metrics is not None:
-            parts.extend(
-                [
-                    f"eval_acc={eval_metrics['accuracy']:.2f}%",
-                    f"eval_damage_acc={eval_metrics['damaged_accuracy']:.2f}%",
-                ]
-            )
+            if "accuracy" in eval_metrics:
+                parts.extend(
+                    [
+                        f"eval_acc={eval_metrics['accuracy']:.2f}%",
+                        f"eval_damage_acc={eval_metrics['damaged_accuracy']:.2f}%",
+                    ]
+                )
+            if "recovery_recovered_fraction" in eval_metrics:
+                parts.extend(
+                    [
+                        "recovery_recovered="
+                        f"{eval_metrics['recovery_recovered_fraction']:.3f}",
+                        f"recovery_missing={eval_metrics['recovery_missing']:.1f}",
+                        f"recovery_extra={eval_metrics['recovery_extra']:.1f}",
+                    ]
+                )
         parts.append(f"time={elapsed:.1f}s")
         print(" | ".join(parts))
 
@@ -483,12 +579,16 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         if val_metrics:
             metrics.update({f"val_{key}": value for key, value in val_metrics.items()})
         if eval_metrics:
-            metrics.update(
-                {
-                    "accuracy": eval_metrics["accuracy"],
-                    "damaged_accuracy": eval_metrics["damaged_accuracy"],
-                }
-            )
+            if "accuracy" in eval_metrics:
+                metrics.update(
+                    {
+                        "accuracy": eval_metrics["accuracy"],
+                        "damaged_accuracy": eval_metrics["damaged_accuracy"],
+                    }
+                )
+            for key, value in eval_metrics.items():
+                if key.startswith("recovery_"):
+                    metrics[key] = value
         self.log_wandb(metrics, step=self.global_step)
 
     def _write_tensorboard(self, writer, epoch, train_metrics, eval_metrics, elapsed):
@@ -506,10 +606,18 @@ class NCA3DTrainer(BaseNCA3DTrainer):
             epoch,
         )
         if eval_metrics:
-            writer.add_scalar("Accuracy/train", eval_metrics["accuracy"], epoch)
-            writer.add_scalar(
-                "Accuracy/damaged", eval_metrics["damaged_accuracy"], epoch
-            )
+            if "accuracy" in eval_metrics:
+                writer.add_scalar("Accuracy/train", eval_metrics["accuracy"], epoch)
+                writer.add_scalar(
+                    "Accuracy/damaged", eval_metrics["damaged_accuracy"], epoch
+                )
+            for key, value in eval_metrics.items():
+                if key.startswith("recovery_"):
+                    writer.add_scalar(
+                        f"Recovery/{key.removeprefix('recovery_')}",
+                        value,
+                        epoch,
+                    )
         writer.add_scalar("Time/epoch", elapsed, epoch)
 
     def visualize_results(self, epoch):

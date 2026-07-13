@@ -38,22 +38,20 @@ def apply_damage(
         print("No live cells to damage!")
         return new_live_mask, np.zeros_like(new_live_mask)
 
-    # Random proportion damage mode
+    # Random damage removes exposed cells first, so it behaves like surface erosion.
     if damage_type == "random" and random_proportion is not None:
         if random_proportion <= 0 or random_proportion > 1:
             raise ValueError("Random proportion must be between 0 and 1")
 
-        # Determine how many cells to damage
         num_live_cells = len(live_indices)
-        num_cells_to_damage = int(num_live_cells * random_proportion)
-
-        # Randomly select cells to damage
-        cells_to_damage = random.sample(range(num_live_cells), num_cells_to_damage)
-
-        # Apply damage to selected cells
-        for idx in cells_to_damage:
-            x, y, z = live_indices[idx]
-            new_live_mask[x, y, z] = 0
+        num_cells_to_damage = min(
+            max(1, int(round(num_live_cells * random_proportion))),
+            num_live_cells - 1,
+        )
+        new_live_mask = apply_random_surface_damage(
+            new_live_mask,
+            num_cells_to_damage,
+        )
 
     # Sphere or Cube damage mode
     else:
@@ -124,6 +122,98 @@ def apply_damage(
                         damage_direction[x, y, z] = 6  # Damage in +z direction
 
     return new_live_mask, damage_direction
+
+
+def apply_random_surface_damage(live_mask, num_cells_to_damage):
+    """Remove random exposed cells, recomputing the surface after each peel."""
+    damaged_mask = np.copy(live_mask)
+    remaining = int(num_cells_to_damage)
+
+    while remaining > 0:
+        live_indices = np.argwhere(damaged_mask == 1)
+        if len(live_indices) <= 1:
+            break
+
+        surface_indices = exposed_surface_indices(damaged_mask)
+        if len(surface_indices) == 0:
+            surface_indices = live_indices
+
+        candidate_order = list(range(len(surface_indices)))
+        random.shuffle(candidate_order)
+        accepted = False
+        for index in candidate_order:
+            candidate_mask = damaged_mask.copy()
+            x, y, z = surface_indices[index]
+            candidate_mask[x, y, z] = 0
+            if has_connected_live_cells(candidate_mask):
+                damaged_mask = candidate_mask
+                remaining -= 1
+                accepted = True
+                break
+
+        if not accepted:
+            break
+
+    return damaged_mask
+
+
+def exposed_surface_indices(live_mask):
+    """Return live cells touching empty space or the grid boundary."""
+    surface = []
+    max_x, max_y, max_z = np.array(live_mask.shape) - 1
+    for x, y, z in np.argwhere(live_mask == 1):
+        if (
+            x == 0
+            or x == max_x
+            or y == 0
+            or y == max_y
+            or z == 0
+            or z == max_z
+            or live_mask[x - 1, y, z] == 0
+            or live_mask[x + 1, y, z] == 0
+            or live_mask[x, y - 1, z] == 0
+            or live_mask[x, y + 1, z] == 0
+            or live_mask[x, y, z - 1] == 0
+            or live_mask[x, y, z + 1] == 0
+        ):
+            surface.append((x, y, z))
+    return np.asarray(surface, dtype=np.int64)
+
+
+def has_connected_live_cells(live_mask):
+    """Return True when all live cells are one 6-connected component."""
+    live_indices = np.argwhere(live_mask == 1)
+    if len(live_indices) <= 1:
+        return True
+
+    live_set = {tuple(coord) for coord in live_indices}
+    stack = [tuple(live_indices[0])]
+    visited = set()
+    while stack:
+        coord = stack.pop()
+        if coord in visited:
+            continue
+        visited.add(coord)
+        for neighbor in live_neighbors(coord, live_mask.shape):
+            if neighbor in live_set and neighbor not in visited:
+                stack.append(neighbor)
+    return len(visited) == len(live_set)
+
+
+def live_neighbors(coord, shape):
+    x, y, z = coord
+    if x > 0:
+        yield (x - 1, y, z)
+    if x < shape[0] - 1:
+        yield (x + 1, y, z)
+    if y > 0:
+        yield (x, y - 1, z)
+    if y < shape[1] - 1:
+        yield (x, y + 1, z)
+    if z > 0:
+        yield (x, y, z - 1)
+    if z < shape[2] - 1:
+        yield (x, y, z + 1)
 
 
 def plot_voxels(
