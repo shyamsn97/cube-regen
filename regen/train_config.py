@@ -43,7 +43,14 @@ def load_training_data(
         labels = np.load(
             Path(dataset_config.get("labels_path", "data/ydata_7class.npy"))
         )
-        return shapes.astype(np.float32), labels.astype(np.int64), None
+        labels = labels.astype(np.int64)
+        shapes, labels = limit_shapes_per_class(
+            shapes.astype(np.float32),
+            labels,
+            max_shapes_per_class=dataset_config.get("max_shapes_per_class"),
+            seed=dataset_config.get("shape_seed", config.get("seed", 0)),
+        )
+        return shapes, labels, None
 
     if source == "shapenet":
         shapes, labels, class_to_idx = load_shapenet_voxels(
@@ -59,6 +66,33 @@ def load_training_data(
         return shapes, labels, class_to_idx
 
     raise ValueError(f"Unsupported dataset source: {source}")
+
+
+def limit_shapes_per_class(
+    shapes: np.ndarray,
+    labels: np.ndarray,
+    max_shapes_per_class: Optional[int],
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if max_shapes_per_class is None:
+        return shapes, labels
+    if max_shapes_per_class <= 0:
+        raise ValueError("max_shapes_per_class must be positive.")
+
+    rng = np.random.default_rng(seed)
+    selected_indices = []
+    for label in sorted(np.unique(labels).tolist()):
+        class_indices = np.where(labels == label)[0]
+        if len(class_indices) > max_shapes_per_class:
+            class_indices = rng.choice(
+                class_indices,
+                size=max_shapes_per_class,
+                replace=False,
+            )
+        selected_indices.extend(int(index) for index in class_indices)
+
+    selected_indices = np.asarray(sorted(selected_indices), dtype=np.int64)
+    return shapes[selected_indices], labels[selected_indices]
 
 
 def train_from_config(
@@ -174,6 +208,13 @@ def train_combined_from_config(
         validate_frequency=output_config.get("validate_frequency", 1),
         repo_id=output_config.get("repo_id"),
         repo_type=output_config.get("repo_type", "model"),
+        experiment_config=wandb_experiment_config(
+            config,
+            labels,
+            class_to_idx=class_to_idx,
+            train_indices=train_indices,
+            val_indices=val_indices,
+        ),
     )
 
     if class_to_idx is not None:
@@ -209,6 +250,8 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
     )
     model = CellRecoveryModel(
         use_class_embeddings=model_config.get("use_class_embeddings", True),
+        use_shape_conditioning=model_config.get("use_shape_conditioning", False),
+        shape_condition_channels=model_config.get("shape_condition_channels", 8),
         num_hidden_channels=model_config.get("num_hidden_channels", 20),
         num_classes=model_config.get("num_classes", int(labels.max()) + 1),
         class_channels=0,
@@ -217,6 +260,7 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
         cell_fire_rate=model_config.get("cell_fire_rate", 0.5),
         clip_range=model_config.get("clip_range", 64.0),
         use_tanh=model_config.get("use_tanh", False),
+        use_adaptive_pooling=model_config.get("use_adaptive_pooling", False),
     )
     trainer = NCA3DTrainer(
         model=model,
@@ -247,6 +291,7 @@ def train_damage_from_config(config: Config, shapes: np.ndarray, labels: np.ndar
         save_dir=output_config.get("save_dir", "nca_models"),
         repo_id=output_config.get("repo_id"),
         repo_type=output_config.get("repo_type", "model"),
+        experiment_config=wandb_experiment_config(config, labels),
     )
     trainer.train(
         epochs=training_config.get("epochs", 500),
@@ -286,6 +331,47 @@ def make_dynamic_damage_dataset(
         seed=seed,
         filter_label=filter_label,
     )
+
+
+def wandb_experiment_config(
+    config: Config,
+    labels: np.ndarray,
+    class_to_idx: Optional[Dict[str, int]] = None,
+    train_indices: Optional[np.ndarray] = None,
+    val_indices: Optional[np.ndarray] = None,
+) -> Config:
+    labels = np.asarray(labels, dtype=np.int64)
+    data_config = {
+        "num_shapes": int(len(labels)),
+        "label_distribution": label_distribution(labels),
+    }
+    if train_indices is not None:
+        train_labels = labels[np.asarray(train_indices, dtype=np.int64)]
+        data_config["train_size"] = int(len(train_labels))
+        data_config["train_label_distribution"] = label_distribution(train_labels)
+    if val_indices is not None:
+        val_labels = labels[np.asarray(val_indices, dtype=np.int64)]
+        data_config["val_size"] = int(len(val_labels))
+        data_config["val_label_distribution"] = label_distribution(val_labels)
+    if class_to_idx is not None:
+        data_config["class_to_idx"] = {
+            str(name): int(index) for name, index in class_to_idx.items()
+        }
+
+    return {
+        "seed": config.get("seed", 0),
+        "run": dict(config.get("run", {})),
+        "dataset": dict(config.get("dataset", {})),
+        "model": dict(config.get("model", {})),
+        "training": dict(config.get("training", {})),
+        "output": dict(config.get("output", {})),
+        "data": data_config,
+    }
+
+
+def label_distribution(labels: np.ndarray) -> Dict[str, int]:
+    unique, counts = np.unique(labels, return_counts=True)
+    return {str(int(label)): int(count) for label, count in zip(unique, counts)}
 
 
 def stratified_split(labels, val_split, seed):

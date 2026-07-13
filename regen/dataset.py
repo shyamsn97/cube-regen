@@ -69,6 +69,16 @@ class DynamicDamageDataset(Dataset):
         # Validate inputs
         if len(shapes) != len(labels):
             raise ValueError("Number of shapes and labels must match")
+        non_empty_indices = [
+            index
+            for index, shape in enumerate(shapes)
+            if np.count_nonzero(shape == 1) > 0
+        ]
+        if len(non_empty_indices) != len(shapes):
+            skipped = len(shapes) - len(non_empty_indices)
+            print(f"Skipping {skipped} empty shape sample(s) with no live cells.")
+            shapes = [shapes[index] for index in non_empty_indices]
+            labels = [labels[index] for index in non_empty_indices]
 
         if min(damage_radius_range) < 1:
             raise ValueError("Minimum damage radius must be at least 1")
@@ -155,6 +165,9 @@ class DynamicDamageDataset(Dataset):
                 shape,
                 damage_type=damage_type,
             )
+            if np.count_nonzero(new_live_mask == 1) == 0:
+                continue
+
             target_count = int(np.count_nonzero(damage_direction))
 
             if target_count > best_target_count:
@@ -164,6 +177,12 @@ class DynamicDamageDataset(Dataset):
 
             if target_count >= self.min_damage_target_cells:
                 return new_live_mask, damage_direction
+
+        if best_live_mask is None:
+            print(
+                f"Failed to generate damage for shape... returning empty damage direction"
+            )
+            return shape.copy(), np.zeros_like(shape)
 
         return best_live_mask, best_damage_direction
 
@@ -185,6 +204,9 @@ class DynamicDamageDataset(Dataset):
                 damage_type=site_damage_type,
                 random_proportion=random_proportion,
             )
+            if np.count_nonzero(current_live_mask == 1) == 0:
+                return current_live_mask, np.zeros_like(shape)
+
             combined_damage_direction = np.where(
                 site_damage_direction > 0,
                 site_damage_direction,

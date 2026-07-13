@@ -60,6 +60,8 @@ Available configs:
 - `configs/train_shapenet.yaml`: combined training from pre-voxelized ShapeNet folders
 - `configs/train_damage.yaml`: local damage-only training
 - `configs/train_damage_modal.yaml`: Modal damage-only training
+- `configs/train_damage_shape_conditioned.yaml`: local shape-conditioned damage-only training
+- `configs/train_damage_shape_conditioned_modal.yaml`: Modal shape-conditioned damage-only training
 - `configs/train_damage_shapenet.yaml`: local ShapeNet damage-only training
 - `configs/train_damage_shapenet_modal.yaml`: Modal ShapeNet damage-only training
 
@@ -163,14 +165,14 @@ Render recovery on a ShapeNet sample:
 
 ```bash
 make visualize-shapenet-recovery-gif
+make visualize-shapenet-seed-recovery-gif
 ```
 
-Render generated default shapes:
+Render recovery on an NPY sample with the combined model:
 
 ```bash
-make visualize-table-recovery-gif
-make visualize-chair-recovery-gif
-make visualize-plane-recovery-gif
+make visualize-combined-recovery-gif
+make visualize-combined-seed-recovery-gif
 ```
 
-For ShapeNet, set `SHAPENET_RECOVERY_CATEGORY` or `SHAPENET_RECOVERY_SAMPLE_INDEX` to choose a specific sample. For generated shapes, set `DEFAULT_SHAPE_RECOVERY_SHAPE=table|chair|plane` on `make visualize-default-shape-recovery-gif`.
+For ShapeNet, set `SHAPENET_RECOVERY_CATEGORY` or `SHAPENET_RECOVERY_SAMPLE_INDEX` to choose a specific sample. For NPY combined recovery, set `COMBINED_RECOVERY_CLASS_LABEL`, `COMBINED_RECOVERY_CLASS_NAME`, or `COMBINED_RECOVERY_SAMPLE_INDEX`. Seed recovery starts from `RECOVERY_SEED_CELLS` live cells.

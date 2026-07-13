@@ -22,20 +22,32 @@ def render_recovery_3d(
     current,
     predicted_damage,
     added_mask=None,
+    repair_target_mask=None,
+    accepted_repair_mask=None,
     original_shape=None,
     size=(12, 4),
     render_edges=False,
 ):
-    predicted_mask = (predicted_damage > 0) & (current > 0)
+    source_prediction_mask = (predicted_damage > 0) & (current > 0)
     if added_mask is None:
         added_mask = np.zeros_like(current, dtype=bool)
     else:
         added_mask = added_mask > 0
+    if repair_target_mask is None:
+        repair_target_mask = np.zeros_like(current, dtype=bool)
+    else:
+        repair_target_mask = repair_target_mask > 0
+    if accepted_repair_mask is None:
+        accepted_repair_mask = np.zeros_like(current, dtype=bool)
+    else:
+        accepted_repair_mask = accepted_repair_mask > 0
 
-    visible = (current > 0) | added_mask
+    visible = (current > 0) | added_mask | repair_target_mask | accepted_repair_mask
     facecolors = np.zeros(visible.shape + (4,), dtype=np.float32)
     facecolors[current > 0] = [0.0, 0.05, 0.85, 1.0]
-    facecolors[predicted_mask] = [1.0, 0.72, 0.0, 1.0]
+    facecolors[source_prediction_mask] = [1.0, 0.72, 0.0, 1.0]
+    facecolors[repair_target_mask] = [0.75, 0.0, 1.0, 1.0]
+    facecolors[accepted_repair_mask] = [0.0, 0.85, 1.0, 1.0]
     facecolors[added_mask] = [0.0, 0.72, 0.25, 1.0]
 
     if original_shape is None:
@@ -92,6 +104,8 @@ def save_recovery_gif(
     steps = recovery_frame_iterator(sampled_steps, show_progress)
     for step_idx, step in steps:
         predicted_count = int(((step.predicted_damage > 0) & (step.voxels > 0)).sum())
+        repair_target_count = mask_count(step.repair_target_mask)
+        accepted_target_count = mask_count(step.accepted_repair_mask)
         added_count = int((step.added_mask > 0).sum())
         missing_text = "unknown"
         if step.missing_count is not None:
@@ -104,6 +118,8 @@ def save_recovery_gif(
             current=step.voxels,
             predicted_damage=step.predicted_damage,
             added_mask=step.added_mask,
+            repair_target_mask=step.repair_target_mask,
+            accepted_repair_mask=step.accepted_repair_mask,
             original_shape=step.voxels.shape,
             size=size,
             render_edges=render_edges,
@@ -113,7 +129,8 @@ def save_recovery_gif(
                 frame,
                 (
                     f"step {step_idx:02d} | missing={missing_text} | "
-                    f"extra={extra_text} | predicted={predicted_count} | "
+                    f"extra={extra_text} | sources={predicted_count} | "
+                    f"targets={repair_target_count} | accepted={accepted_target_count} | "
                     f"added_last={added_count} | added_total={step.total_added_count}"
                 ),
             )
@@ -132,6 +149,12 @@ def save_recovery_gif(
         loop=0,
     )
     return output_path
+
+
+def mask_count(mask):
+    if mask is None:
+        return 0
+    return int((mask > 0).sum())
 
 
 def sample_recovery_steps(steps, frame_stride, skip_noop_prefix=True):

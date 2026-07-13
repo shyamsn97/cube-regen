@@ -1,13 +1,15 @@
 .PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 \
-	train train-modal train-damage train-damage-modal train-combined train-combined-modal \
+	train train-modal train-damage train-damage-modal \
+	train-damage-shape-conditioned train-damage-shape-conditioned-modal \
+	train-combined train-combined-modal \
 	train-damage-shapenet train-damage-shapenet-modal train-combined-shapenet \
 	train-combined-shapenet-modal shapenet-volume-create shapenet-volume-ls \
 	shapenet-volume-upload shapenet-volume-download shapenet-volume-ls-data \
 	shapenet-subset-download shapenet-damage-subset-download \
 	visualize-shapenet-predictions visualize-damage-prediction \
-	visualize-shapenet-recovery-gif visualize-default-shape-recovery-gif \
-	visualize-table-recovery-gif visualize-chair-recovery-gif \
-	visualize-plane-recovery-gif \
+	visualize-shape-conditioned-recovery-gif visualize-shape-conditioned-seed-recovery-gif \
+	visualize-shapenet-recovery-gif visualize-shapenet-seed-recovery-gif \
+	visualize-combined-recovery-gif visualize-combined-seed-recovery-gif \
 	visualize-sakana-damage visualize-sakana-recovery-gif \
 	visualize-sakana-damage-recovery-gif visualize-sakana-seed-recovery-gif \
 	train-sakana train-sakana-modal
@@ -40,11 +42,14 @@ SHAPENET_SUBSET_DOWNLOAD_SCRIPT ?= scripts/download_shapenet_subset.py
 SHAPENET_DOWNLOAD_SCRIPT ?= scripts/download_shapenet_volume.py
 INFERENCE_SCRIPT ?= scripts/inference.py
 SHAPENET_RECOVERY_SCRIPT ?= scripts/recover_shapenet.py
-DEFAULT_SHAPE_RECOVERY_SCRIPT ?= scripts/recover_default_shape.py
+COMBINED_RECOVERY_SCRIPT ?= scripts/recover_combined.py
+SHAPE_CONDITIONED_RECOVERY_SCRIPT ?= scripts/recover_shape_conditioned.py
 CONFIG ?= configs/train_combined.yaml
 MODAL_CONFIG ?= configs/train_combined_modal.yaml
 DAMAGE_CONFIG ?= configs/train_damage.yaml
 DAMAGE_MODAL_CONFIG ?= configs/train_damage_modal.yaml
+DAMAGE_SHAPE_CONDITIONED_CONFIG ?= configs/train_damage_shape_conditioned.yaml
+DAMAGE_SHAPE_CONDITIONED_MODAL_CONFIG ?= configs/train_damage_shape_conditioned_modal.yaml
 COMBINED_CONFIG ?= configs/train_combined.yaml
 COMBINED_MODAL_CONFIG ?= configs/train_combined_modal.yaml
 DAMAGE_SHAPENET_CONFIG ?= configs/train_damage_shapenet.yaml
@@ -65,26 +70,54 @@ SHAPENET_RECOVERY_WEIGHTS ?= $(SHAPENET_PREDICTION_WEIGHTS)
 SHAPENET_RECOVERY_CONFIG ?= $(COMBINED_SHAPENET_MODAL_CONFIG)
 SHAPENET_RECOVERY_OUTPUT_DIR ?= examples/recovery/shapenet
 SHAPENET_RECOVERY_OUTPUT ?= shapenet_recovery.gif
+SHAPENET_SEED_RECOVERY_OUTPUT ?= shapenet_seed_recovery.gif
 SHAPENET_RECOVERY_CATEGORY ?=
-SHAPENET_RECOVERY_SAMPLE_INDEX ?= 0
-DEFAULT_SHAPE_RECOVERY_REPO ?= shyamsn97/cube-regen-combined-hdim-20
-DEFAULT_SHAPE_RECOVERY_OUTPUT_DIR ?= examples/recovery/default_shapes
-DEFAULT_SHAPE_RECOVERY_SHAPE ?= table
-DEFAULT_SHAPE_RECOVERY_OUTPUT ?= $(DEFAULT_SHAPE_RECOVERY_SHAPE)_recovery.gif
-DEFAULT_SHAPE_RECOVERY_SIZE ?= 32
-DEFAULT_SHAPE_RECOVERY_DAMAGE_TYPE ?= sphere
-DEFAULT_SHAPE_RECOVERY_DAMAGE_RADIUS ?= 3
-DEFAULT_SHAPE_RECOVERY_CENTER_FRACTIONS ?= 0.25 0.5 0.75
+SHAPENET_RECOVERY_SAMPLE_INDEX ?= 2
+SHAPE_CONDITIONED_RECOVERY_REPO ?= shyamsn97/cube-regen-shape-conditioned-damage-hdim-64
+SHAPE_CONDITIONED_RECOVERY_CONFIG ?= $(DAMAGE_SHAPE_CONDITIONED_MODAL_CONFIG)
+SHAPE_CONDITIONED_RECOVERY_OUTPUT_DIR ?= examples/recovery/shape_conditioned
+SHAPE_CONDITIONED_RECOVERY_OUTPUT ?= shape_conditioned_recovery.gif
+SHAPE_CONDITIONED_SEED_RECOVERY_OUTPUT ?= shape_conditioned_seed_recovery.gif
+SHAPE_CONDITIONED_RECOVERY_CLASS_NAME ?=
+SHAPE_CONDITIONED_RECOVERY_CLASS_LABEL ?= 3
+SHAPE_CONDITIONED_RECOVERY_SHAPE_SEED ?= 
+SHAPE_CONDITIONED_RECOVERY_SAMPLE_INDEX ?= 0
+SHAPE_CONDITIONED_RECOVERY_DEVICE ?= cpu
+SHAPE_CONDITIONED_USE_ADAPTIVE_POOLING ?= false
+SHAPE_CONDITIONED_RECOVERY_DAMAGE_TYPES ?= sphere cube
+SHAPE_CONDITIONED_RECOVERY_DAMAGE_RADIUS_RANGE ?= 1 3
+SHAPE_CONDITIONED_RECOVERY_NUM_DAMAGE_SITES_RANGE ?= 2 3
+SHAPE_CONDITIONED_RECOVERY_MIN_DAMAGE_TARGET_CELLS ?= 8
+SHAPE_CONDITIONED_RECOVERY_MAX_DAMAGE_ATTEMPTS ?= 10
+COMBINED_RECOVERY_REPO ?= shyamsn97/cube-regen-combined-hdim-20
+COMBINED_RECOVERY_CONFIG ?= $(COMBINED_MODAL_CONFIG)
+COMBINED_RECOVERY_OUTPUT_DIR ?= examples/recovery/combined
+COMBINED_RECOVERY_OUTPUT ?= combined_recovery.gif
+COMBINED_SEED_RECOVERY_OUTPUT ?= combined_seed_recovery.gif
+COMBINED_RECOVERY_CLASS_NAME ?=
+COMBINED_RECOVERY_CLASS_LABEL ?= 3
+COMBINED_RECOVERY_SHAPE_SEED ?= 0
+COMBINED_RECOVERY_SAMPLE_INDEX ?= 0
+COMBINED_RECOVERY_DAMAGE_TYPES ?= sphere cube
+COMBINED_RECOVERY_DAMAGE_RADIUS_RANGE ?= 1 3
+COMBINED_RECOVERY_NUM_DAMAGE_SITES_RANGE ?= 2 3
+COMBINED_RECOVERY_MIN_DAMAGE_TARGET_CELLS ?= 8
+COMBINED_RECOVERY_MAX_DAMAGE_ATTEMPTS ?= 10
+COMBINED_RECOVERY_UNCONSTRAINED ?= 1
 RECOVERY_INFERENCE_STEPS ?= 128
 RECOVERY_ITERATIONS ?= 128
-RECOVERY_FRAME_STRIDE ?= 4
-RECOVERY_CONFIDENCE_WINDOW ?= 12
-RECOVERY_CONFIDENCE_REQUIRED ?= 6
-RECOVERY_NO_PROGRESS_PATIENCE ?= 12
-RECOVERY_EXTRA_STEPS_AFTER_COMPLETE ?= 8
-RECOVERY_CONSENSUS_MIN_VOTES ?= 2
+RECOVERY_FRAME_STRIDE ?= 1
+RECOVERY_START_MODE ?= damage
+RECOVERY_SEED_CELLS ?= 64
+RECOVERY_CONFIDENCE_WINDOW ?= 24
+RECOVERY_CONFIDENCE_REQUIRED ?= 20
+RECOVERY_NO_PROGRESS_PATIENCE ?= 32
+RECOVERY_EXTRA_STEPS_AFTER_COMPLETE ?= 32
+RECOVERY_CONSENSUS_MIN_VOTES ?= 1
 RECOVERY_SINGLE_VOTE_CONFIDENCE ?= 0.99
+RECOVERY_DIRECTION_PROBABILITY_THRESHOLD ?= 0.6
 RECOVERY_UNCONSTRAINED ?= 1
+RECOVERY_FORCE_DOWNLOAD ?= 1
 DAMAGE_INFERENCE_REPO ?= shyamsn97/cube-regen-damage-detection
 DAMAGE_INFERENCE_OUTPUT ?= examples/damage_predictions
 DAMAGE_INFERENCE_STEPS ?= 128
@@ -105,6 +138,7 @@ SAKANA_RECOVERY_CONFIDENCE_WINDOW ?= 24
 SAKANA_RECOVERY_CONFIDENCE_REQUIRED ?= 24
 SAKANA_RECOVERY_CONSENSUS_MIN_VOTES ?= 1
 SAKANA_RECOVERY_SINGLE_VOTE_CONFIDENCE ?= 0.99
+SAKANA_RECOVERY_UNCONSTRAINED ?= 1
 
 help: ## show this help message
 	@python -c "$$PRINT_HELP_PYSCRIPT" < $(MAKEFILE_LIST)
@@ -214,6 +248,40 @@ visualize-damage-prediction: ## render pure damage-detection inference from the 
 		--output-dir $(DAMAGE_INFERENCE_OUTPUT) \
 		--steps $(DAMAGE_INFERENCE_STEPS)
 
+visualize-shape-conditioned-recovery-gif: ## render NPY sample recovery with shape-conditioned model
+	$(PYTHON) $(SHAPE_CONDITIONED_RECOVERY_SCRIPT) \
+		--repo-id $(SHAPE_CONDITIONED_RECOVERY_REPO) \
+		--config $(SHAPE_CONDITIONED_RECOVERY_CONFIG) \
+		--output-dir $(SHAPE_CONDITIONED_RECOVERY_OUTPUT_DIR) \
+		--output $(SHAPE_CONDITIONED_RECOVERY_OUTPUT) \
+		--use-adaptive-pooling $(SHAPE_CONDITIONED_USE_ADAPTIVE_POOLING) \
+		--class-name "$(SHAPE_CONDITIONED_RECOVERY_CLASS_NAME)" \
+		--class-label "$(SHAPE_CONDITIONED_RECOVERY_CLASS_LABEL)" \
+		--shape-seed "$(SHAPE_CONDITIONED_RECOVERY_SHAPE_SEED)" \
+		--sample-index $(SHAPE_CONDITIONED_RECOVERY_SAMPLE_INDEX) \
+		--damage-types $(SHAPE_CONDITIONED_RECOVERY_DAMAGE_TYPES) \
+		--damage-radius-range $(SHAPE_CONDITIONED_RECOVERY_DAMAGE_RADIUS_RANGE) \
+		--num-damage-sites-range $(SHAPE_CONDITIONED_RECOVERY_NUM_DAMAGE_SITES_RANGE) \
+		--min-damage-target-cells $(SHAPE_CONDITIONED_RECOVERY_MIN_DAMAGE_TARGET_CELLS) \
+		--max-damage-attempts $(SHAPE_CONDITIONED_RECOVERY_MAX_DAMAGE_ATTEMPTS) \
+		--steps $(RECOVERY_INFERENCE_STEPS) \
+		--recovery-iterations $(RECOVERY_ITERATIONS) \
+		--recovery-frame-stride $(RECOVERY_FRAME_STRIDE) \
+		--recovery-start-mode $(RECOVERY_START_MODE) \
+		--recovery-seed-cells $(RECOVERY_SEED_CELLS) \
+		--recovery-confidence-window $(RECOVERY_CONFIDENCE_WINDOW) \
+		--recovery-confidence-required $(RECOVERY_CONFIDENCE_REQUIRED) \
+		--recovery-no-progress-patience $(RECOVERY_NO_PROGRESS_PATIENCE) \
+		--recovery-extra-steps-after-complete $(RECOVERY_EXTRA_STEPS_AFTER_COMPLETE) \
+		--recovery-consensus-min-votes $(RECOVERY_CONSENSUS_MIN_VOTES) \
+		--recovery-single-vote-confidence $(RECOVERY_SINGLE_VOTE_CONFIDENCE) \
+		--recovery-direction-probability-threshold $(RECOVERY_DIRECTION_PROBABILITY_THRESHOLD) $(if $(filter 0 false no,$(RECOVERY_UNCONSTRAINED)),--constrained-recovery,) \
+		$(if $(filter 1 true yes,$(RECOVERY_FORCE_DOWNLOAD)),--force-download,) \
+		$(if $(SHAPE_CONDITIONED_RECOVERY_DEVICE),--device $(SHAPE_CONDITIONED_RECOVERY_DEVICE),)
+
+visualize-shape-conditioned-seed-recovery-gif: ## render shape-conditioned recovery from seed cells
+	$(MAKE) visualize-shape-conditioned-recovery-gif RECOVERY_START_MODE=seed SHAPE_CONDITIONED_RECOVERY_OUTPUT=$(SHAPE_CONDITIONED_SEED_RECOVERY_OUTPUT)
+
 visualize-shapenet-recovery-gif: shapenet-subset-download ## render ShapeNet sample recovery GIF
 	$(PYTHON) $(SHAPENET_RECOVERY_SCRIPT) \
 		--repo-id $(SHAPENET_RECOVERY_REPO) \
@@ -227,43 +295,51 @@ visualize-shapenet-recovery-gif: shapenet-subset-download ## render ShapeNet sam
 		--steps $(RECOVERY_INFERENCE_STEPS) \
 		--recovery-iterations $(RECOVERY_ITERATIONS) \
 		--recovery-frame-stride $(RECOVERY_FRAME_STRIDE) \
+		--recovery-start-mode $(RECOVERY_START_MODE) \
+		--recovery-seed-cells $(RECOVERY_SEED_CELLS) \
 		--recovery-confidence-window $(RECOVERY_CONFIDENCE_WINDOW) \
 		--recovery-confidence-required $(RECOVERY_CONFIDENCE_REQUIRED) \
 		--recovery-no-progress-patience $(RECOVERY_NO_PROGRESS_PATIENCE) \
 		--recovery-extra-steps-after-complete $(RECOVERY_EXTRA_STEPS_AFTER_COMPLETE) \
 		--recovery-consensus-min-votes $(RECOVERY_CONSENSUS_MIN_VOTES) \
 		--recovery-single-vote-confidence $(RECOVERY_SINGLE_VOTE_CONFIDENCE) \
-		$(if $(filter 1 true yes,$(RECOVERY_UNCONSTRAINED)),--unconstrained-recovery,)
+		--recovery-direction-probability-threshold $(RECOVERY_DIRECTION_PROBABILITY_THRESHOLD) $(if $(filter 0 false no,$(RECOVERY_UNCONSTRAINED)),--constrained-recovery,) \
+		$(if $(filter 1 true yes,$(RECOVERY_FORCE_DOWNLOAD)),--force-download,)
 
-visualize-default-shape-recovery-gif: ## render generated table/chair/plane recovery GIF
-	$(PYTHON) $(DEFAULT_SHAPE_RECOVERY_SCRIPT) \
-		--repo-id $(DEFAULT_SHAPE_RECOVERY_REPO) \
-		--output-dir $(DEFAULT_SHAPE_RECOVERY_OUTPUT_DIR) \
-		--output $(DEFAULT_SHAPE_RECOVERY_OUTPUT) \
-		--shape $(DEFAULT_SHAPE_RECOVERY_SHAPE) \
-		--size $(DEFAULT_SHAPE_RECOVERY_SIZE) \
-		--damage-type $(DEFAULT_SHAPE_RECOVERY_DAMAGE_TYPE) \
-		--damage-radius $(DEFAULT_SHAPE_RECOVERY_DAMAGE_RADIUS) \
-		--damage-center-fractions $(DEFAULT_SHAPE_RECOVERY_CENTER_FRACTIONS) \
+visualize-shapenet-seed-recovery-gif: ## render ShapeNet recovery from seed cells
+	$(MAKE) visualize-shapenet-recovery-gif RECOVERY_START_MODE=seed SHAPENET_RECOVERY_OUTPUT=$(SHAPENET_SEED_RECOVERY_OUTPUT)
+
+visualize-combined-recovery-gif: ## render NPY sample recovery with combined model
+	$(PYTHON) $(COMBINED_RECOVERY_SCRIPT) \
+		--repo-id $(COMBINED_RECOVERY_REPO) \
+		--config $(COMBINED_RECOVERY_CONFIG) \
+		--output-dir $(COMBINED_RECOVERY_OUTPUT_DIR) \
+		--output $(COMBINED_RECOVERY_OUTPUT) \
+		--class-name "$(COMBINED_RECOVERY_CLASS_NAME)" \
+		--class-label "$(COMBINED_RECOVERY_CLASS_LABEL)" \
+		--shape-seed "$(COMBINED_RECOVERY_SHAPE_SEED)" \
+		--sample-index $(COMBINED_RECOVERY_SAMPLE_INDEX) \
+		--damage-types $(COMBINED_RECOVERY_DAMAGE_TYPES) \
+		--damage-radius-range $(COMBINED_RECOVERY_DAMAGE_RADIUS_RANGE) \
+		--num-damage-sites-range $(COMBINED_RECOVERY_NUM_DAMAGE_SITES_RANGE) \
+		--min-damage-target-cells $(COMBINED_RECOVERY_MIN_DAMAGE_TARGET_CELLS) \
+		--max-damage-attempts $(COMBINED_RECOVERY_MAX_DAMAGE_ATTEMPTS) \
 		--steps $(RECOVERY_INFERENCE_STEPS) \
 		--recovery-iterations $(RECOVERY_ITERATIONS) \
 		--recovery-frame-stride $(RECOVERY_FRAME_STRIDE) \
+		--recovery-start-mode $(RECOVERY_START_MODE) \
+		--recovery-seed-cells $(RECOVERY_SEED_CELLS) \
 		--recovery-confidence-window $(RECOVERY_CONFIDENCE_WINDOW) \
 		--recovery-confidence-required $(RECOVERY_CONFIDENCE_REQUIRED) \
 		--recovery-no-progress-patience $(RECOVERY_NO_PROGRESS_PATIENCE) \
 		--recovery-extra-steps-after-complete $(RECOVERY_EXTRA_STEPS_AFTER_COMPLETE) \
 		--recovery-consensus-min-votes $(RECOVERY_CONSENSUS_MIN_VOTES) \
 		--recovery-single-vote-confidence $(RECOVERY_SINGLE_VOTE_CONFIDENCE) \
-		$(if $(filter 1 true yes,$(RECOVERY_UNCONSTRAINED)),--unconstrained-recovery,)
+		--recovery-direction-probability-threshold $(RECOVERY_DIRECTION_PROBABILITY_THRESHOLD) $(if $(filter 0 false no,$(COMBINED_RECOVERY_UNCONSTRAINED)),--constrained-recovery,) \
+		$(if $(filter 1 true yes,$(RECOVERY_FORCE_DOWNLOAD)),--force-download,)
 
-visualize-table-recovery-gif: ## render generated table recovery GIF
-	$(MAKE) visualize-default-shape-recovery-gif DEFAULT_SHAPE_RECOVERY_SHAPE=table DEFAULT_SHAPE_RECOVERY_OUTPUT=table_recovery.gif
-
-visualize-chair-recovery-gif: ## render generated chair recovery GIF
-	$(MAKE) visualize-default-shape-recovery-gif DEFAULT_SHAPE_RECOVERY_SHAPE=chair DEFAULT_SHAPE_RECOVERY_OUTPUT=chair_recovery.gif
-
-visualize-plane-recovery-gif: ## render generated plane recovery GIF
-	$(MAKE) visualize-default-shape-recovery-gif DEFAULT_SHAPE_RECOVERY_SHAPE=plane DEFAULT_SHAPE_RECOVERY_OUTPUT=plane_recovery.gif
+visualize-combined-seed-recovery-gif: ## render combined model recovery from seed cells
+	$(MAKE) visualize-combined-recovery-gif RECOVERY_START_MODE=seed COMBINED_RECOVERY_OUTPUT=$(COMBINED_SEED_RECOVERY_OUTPUT)
 
 visualize-sakana-damage: ## render Sakana sphere/cube damage inference rows
 	$(PYTHON) $(SAKANA_INFERENCE_SCRIPT) \
@@ -290,8 +366,7 @@ visualize-sakana-damage-recovery-gif: ## render Sakana recovery from damaged ful
 		--recovery-confidence-window $(SAKANA_RECOVERY_CONFIDENCE_WINDOW) \
 		--recovery-confidence-required $(SAKANA_RECOVERY_CONFIDENCE_REQUIRED) \
 		--recovery-consensus-min-votes $(SAKANA_RECOVERY_CONSENSUS_MIN_VOTES) \
-		--recovery-single-vote-confidence $(SAKANA_RECOVERY_SINGLE_VOTE_CONFIDENCE) \
-		--unconstrained-recovery
+		--recovery-single-vote-confidence $(SAKANA_RECOVERY_SINGLE_VOTE_CONFIDENCE) $(if $(filter 0 false no,$(SAKANA_RECOVERY_UNCONSTRAINED)),--constrained-recovery,)
 
 visualize-sakana-seed-recovery-gif: ## render Sakana recovery from starting cells
 	$(PYTHON) $(SAKANA_INFERENCE_SCRIPT) \
@@ -310,8 +385,7 @@ visualize-sakana-seed-recovery-gif: ## render Sakana recovery from starting cell
 		--recovery-confidence-window $(SAKANA_RECOVERY_CONFIDENCE_WINDOW) \
 		--recovery-confidence-required $(SAKANA_RECOVERY_CONFIDENCE_REQUIRED) \
 		--recovery-consensus-min-votes $(SAKANA_RECOVERY_CONSENSUS_MIN_VOTES) \
-		--recovery-single-vote-confidence $(SAKANA_RECOVERY_SINGLE_VOTE_CONFIDENCE) \
-		--unconstrained-recovery
+		--recovery-single-vote-confidence $(SAKANA_RECOVERY_SINGLE_VOTE_CONFIDENCE) $(if $(filter 0 false no,$(SAKANA_RECOVERY_UNCONSTRAINED)),--constrained-recovery,)
 
 train: ## train with CONFIG=configs/train_combined.yaml (override CONFIG=...)
 	$(PYTHON) $(TRAIN_SCRIPT) --config $(CONFIG)
@@ -324,6 +398,12 @@ train-damage: ## train damage direction detection locally
 
 train-damage-modal: ## train damage direction detection on Modal
 	$(PYTHON) $(TRAIN_SCRIPT) --config $(DAMAGE_MODAL_CONFIG)
+
+train-damage-shape-conditioned: ## train shape-conditioned damage detection locally
+	$(PYTHON) $(TRAIN_SCRIPT) --config $(DAMAGE_SHAPE_CONDITIONED_CONFIG) --use-adaptive-pooling $(SHAPE_CONDITIONED_USE_ADAPTIVE_POOLING)
+
+train-damage-shape-conditioned-modal: ## train shape-conditioned damage detection on Modal
+	$(PYTHON) $(TRAIN_SCRIPT) --config $(DAMAGE_SHAPE_CONDITIONED_MODAL_CONFIG) --use-adaptive-pooling $(SHAPE_CONDITIONED_USE_ADAPTIVE_POOLING)
 
 train-combined: ## train combined class + damage detection locally
 	$(PYTHON) $(TRAIN_SCRIPT) --config $(COMBINED_CONFIG)

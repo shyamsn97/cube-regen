@@ -25,27 +25,37 @@ class PretrainedModelMixin:
         filename="pytorch_model.pt",
         config_filename="config.json",
         repo_type="model",
+        force_download=False,
+        config_overrides=None,
     ):
         source = Path(str(pretrained_model_name_or_path))
         if source.exists():
-            model = _load_pretrained_from_local(source, filename, config_filename)
+            model = _load_pretrained_from_local(
+                source,
+                filename,
+                config_filename,
+                config_overrides=config_overrides,
+            )
         else:
             config_path = hf_hub_download(
                 repo_id=str(pretrained_model_name_or_path),
                 filename=config_filename,
                 repo_type=repo_type,
                 token=token or os.environ.get("HF_TOKEN"),
+                force_download=force_download,
             )
             weights_path = hf_hub_download(
                 repo_id=str(pretrained_model_name_or_path),
                 filename=filename,
                 repo_type=repo_type,
                 token=token or os.environ.get("HF_TOKEN"),
+                force_download=force_download,
             )
             with open(config_path, "r") as f:
                 config = json.load(f)
-            model = create_model_from_config(config)
-            _load_pretrained_weights(model, weights_path)
+            state_dict = _load_state_dict(weights_path)
+            model = _create_model_for_state_dict(config, state_dict, config_overrides)
+            model.load_state_dict(state_dict)
 
         if device is not None:
             model = model.to(device)
@@ -96,19 +106,26 @@ class PretrainedModelMixin:
         return {"weights": str(weights_path), "config": str(config_path)}
 
     @torch.no_grad()
-    def predict(self, damaged_voxels, steps=96, class_label=None, return_state=False):
+    def predict(
+        self,
+        damaged_voxels,
+        steps=96,
+        class_label=None,
+        shape_condition=None,
+        return_state=False,
+    ):
         self.eval()
         device = next(self.parameters()).device
         damaged_tensor = _voxel_tensor(damaged_voxels, device)
-        labels = _label_tensor(
-            class_label,
-            damaged_tensor.shape[0],
-            device,
-            use_labels=getattr(self, "use_class_embeddings", False),
+        condition = self.rollout_condition_tensor(
+            damaged_tensor,
+            class_label=class_label,
+            shape_condition=shape_condition,
+            device=device,
         )
         state = self.initialize(damaged_tensor)
         for _ in range(steps):
-            state = self(state, labels) if labels is not None else self(state)
+            state = self(state, condition) if condition is not None else self(state)
 
         damage_logits = self.classify(state)
         probabilities = torch.softmax(damage_logits, dim=-1)
@@ -122,6 +139,7 @@ class PretrainedModelMixin:
             damage_logits=damage_logits,
             damage_labels=damage_labels,
             damage_confidence=damage_confidence,
+            damage_probabilities=probabilities,
             class_logits=class_logits,
             class_label=predicted_class,
             final_state=state if return_state else None,
@@ -131,6 +149,7 @@ class PretrainedModelMixin:
         self,
         damaged_voxels,
         original_mask=None,
+        shape_condition=None,
         steps_per_prediction=96,
         recovery_steps=24,
         confidence_threshold=0.0,
@@ -143,9 +162,18 @@ class PretrainedModelMixin:
         extra_steps_after_complete=0,
         consensus_min_votes=2,
         single_vote_confidence_threshold=0.99,
+        direction_probability_threshold=0.6,
     ):
+        recovery_shape_condition = shape_condition
+        if recovery_shape_condition is None and original_mask is not None:
+            recovery_shape_condition = original_mask
+
         def predict_fn(current):
-            prediction = self.predict(current, steps=steps_per_prediction)
+            prediction = self.predict(
+                current,
+                steps=steps_per_prediction,
+                shape_condition=recovery_shape_condition,
+            )
             return (
                 prediction.damage_labels.squeeze(0)
                 .detach()
@@ -153,6 +181,7 @@ class PretrainedModelMixin:
                 .numpy()
                 .astype(np.uint8),
                 prediction.damage_confidence.squeeze(0).detach().cpu().numpy(),
+                prediction.damage_probabilities.squeeze(0).detach().cpu().numpy(),
             )
 
         return recover_damage(
@@ -170,6 +199,25 @@ class PretrainedModelMixin:
             extra_steps_after_complete=extra_steps_after_complete,
             consensus_min_votes=consensus_min_votes,
             single_vote_confidence_threshold=single_vote_confidence_threshold,
+            direction_probability_threshold=direction_probability_threshold,
+        )
+
+    def rollout_condition_tensor(
+        self,
+        damaged_tensor,
+        class_label=None,
+        shape_condition=None,
+        device=None,
+    ):
+        if getattr(self, "use_shape_conditioning", False):
+            if shape_condition is None:
+                shape_condition = damaged_tensor
+            return _voxel_tensor(shape_condition, device or damaged_tensor.device)
+        return _label_tensor(
+            class_label,
+            damaged_tensor.shape[0],
+            device or damaged_tensor.device,
+            use_labels=getattr(self, "use_class_embeddings", False),
         )
 
     def train_step(
@@ -183,16 +231,21 @@ class PretrainedModelMixin:
         loss_config = loss_config or DamageLossConfig()
         self.train()
         device = next(self.parameters()).device
-        structures, damage_directions, labels = _prepare_batch(batch, device)
+        structures, damage_directions, labels, original_shapes = _prepare_batch(
+            batch,
+            device,
+        )
 
         state = self.initialize(structures)
-        rollout_labels = (
-            labels if getattr(self, "use_class_embeddings", False) else None
+        rollout_condition = (
+            original_shapes
+            if getattr(self, "use_shape_conditioning", False)
+            else labels if getattr(self, "use_class_embeddings", False) else None
         )
         for _ in range(steps):
             state = (
-                self(state, rollout_labels)
-                if rollout_labels is not None
+                self(state, rollout_condition)
+                if rollout_condition is not None
                 else self(state)
             )
 
@@ -315,6 +368,8 @@ class CellRecoveryModel(PretrainedModelMixin, nn.Module):
         num_damage_directions=7,
         num_classes=0,
         use_class_embeddings=False,
+        use_shape_conditioning=False,
+        shape_condition_channels=8,
         class_channels=0,
         alpha_living_threshold=0.1,
         cell_fire_rate=0.5,
@@ -322,10 +377,17 @@ class CellRecoveryModel(PretrainedModelMixin, nn.Module):
         use_tanh=True,
         freeze_perception=True,
         model_type="CellRecoveryModel",
+        use_adaptive_pooling=False,
     ):
         super().__init__()
+        if use_class_embeddings and use_shape_conditioning:
+            raise ValueError(
+                "use_class_embeddings and use_shape_conditioning are mutually exclusive."
+            )
         self.model_type = model_type
         self.use_class_embeddings = use_class_embeddings
+        self.use_shape_conditioning = use_shape_conditioning
+        self.shape_condition_channels = shape_condition_channels
         self.num_classes = num_classes
         self.num_damage_directions = num_damage_directions
         self.num_hidden_channels = num_hidden_channels
@@ -336,7 +398,7 @@ class CellRecoveryModel(PretrainedModelMixin, nn.Module):
         self.freeze_perception = freeze_perception
         self.class_channels = class_channels
         self.has_class_head = class_channels > 0
-
+        self.use_adaptive_pooling = use_adaptive_pooling
         self.class_channel_start = 1 + num_hidden_channels
         self.damage_channel_start = self.class_channel_start + class_channels
         self.channel_n = (
@@ -346,6 +408,34 @@ class CellRecoveryModel(PretrainedModelMixin, nn.Module):
 
         if self.use_class_embeddings:
             self.class_embeddings = nn.Embedding(num_classes, self.channel_n - 1)
+        if self.use_shape_conditioning:
+            if self.use_adaptive_pooling:
+                self.shape_encoder = nn.Sequential(
+                    nn.Conv3d(
+                        1, shape_condition_channels, kernel_size=3, padding="same"
+                    ),
+                    nn.Tanh(),
+                    nn.AdaptiveAvgPool3d((5, 5, 5)),
+                    nn.Flatten(),
+                    nn.Linear(shape_condition_channels * 5 * 5 * 5, self.channel_n - 1),
+                )
+            else:
+                self.shape_encoder = nn.Sequential(
+                    nn.Conv3d(
+                        1, shape_condition_channels, kernel_size=3, padding="same"
+                    ),
+                    nn.Tanh(),
+                    nn.Conv3d(
+                        shape_condition_channels,
+                        shape_condition_channels,
+                        kernel_size=3,
+                        padding=1,
+                    ),
+                    nn.Tanh(),
+                    nn.Conv3d(
+                        shape_condition_channels, self.channel_n - 1, kernel_size=1
+                    ),
+                )
 
         self.kernel_mask = torch.tensor(
             [
@@ -396,11 +486,8 @@ class CellRecoveryModel(PretrainedModelMixin, nn.Module):
         update = self.dmodel(self.perceive(x.permute(0, 4, 1, 2, 3))).permute(
             0, 2, 3, 4, 1
         )
-        if y is not None and self.use_class_embeddings:
-            y_embedding = self.class_embeddings(y).view(
-                y.shape[0], 1, 1, 1, self.channel_n - 1
-            )
-            update = update + y_embedding
+        if y is not None:
+            update = update + self.condition_embedding(y)
 
         update_mask = torch.rand_like(x[:, :, :, :, :1]) <= self.cell_fire_rate
         living_mask = gray > self.alpha_living_threshold
@@ -410,6 +497,42 @@ class CellRecoveryModel(PretrainedModelMixin, nn.Module):
         else:
             state = state + residual_mask * update
         return torch.cat([gray, state], dim=-1)
+
+    def condition_embedding(self, condition):
+        if self.use_shape_conditioning:
+            return self.shape_condition_embedding(condition)
+        if self.use_class_embeddings:
+            return self.class_embeddings(condition).view(
+                condition.shape[0],
+                1,
+                1,
+                1,
+                self.channel_n - 1,
+            )
+        raise ValueError("This model does not use rollout conditioning.")
+
+    def shape_condition_embedding(self, shape_condition):
+        shape_condition = shape_condition.float()
+        if shape_condition.ndim == 3:
+            shape_condition = shape_condition.unsqueeze(0)
+        if shape_condition.ndim == 4:
+            shape_condition = shape_condition.unsqueeze(1)
+        elif shape_condition.ndim == 5 and shape_condition.shape[-1] == 1:
+            shape_condition = shape_condition.permute(0, 4, 1, 2, 3)
+        if shape_condition.ndim != 5 or shape_condition.shape[1] != 1:
+            raise ValueError(
+                "Expected shape condition as [D,H,W], [B,D,H,W], or [B,1,D,H,W]."
+            )
+        encoded = self.shape_encoder(shape_condition)
+        if self.use_adaptive_pooling:
+            return encoded.view(
+                shape_condition.shape[0],
+                1,
+                1,
+                1,
+                self.channel_n - 1,
+            )
+        return encoded.permute(0, 2, 3, 4, 1)
 
     def damage_logits(self, x):
         return x[:, :, :, :, self.damage_channel_start :]
@@ -463,6 +586,9 @@ class CellRecoveryModel(PretrainedModelMixin, nn.Module):
             "use_tanh": self.use_tanh,
             "freeze_perception": self.freeze_perception,
             "use_class_embeddings": self.use_class_embeddings,
+            "use_shape_conditioning": self.use_shape_conditioning,
+            "shape_condition_channels": self.shape_condition_channels,
+            "use_adaptive_pooling": self.use_adaptive_pooling,
             "class_channels": self.class_channels,
             "channel_n": self.channel_n,
             "perception_channels": self.perception_channels,
@@ -475,6 +601,7 @@ class Prediction:
     damage_logits: torch.Tensor
     damage_labels: torch.Tensor
     damage_confidence: torch.Tensor
+    damage_probabilities: torch.Tensor
     class_logits: Optional[torch.Tensor] = None
     class_label: Optional[torch.Tensor] = None
     final_state: Optional[torch.Tensor] = None
@@ -509,16 +636,19 @@ def create_model_from_config(config: dict):
         num_damage_directions=config.get("num_damage_directions", 7),
         num_classes=config.get("num_classes", 0),
         use_class_embeddings=config.get("use_class_embeddings", False),
+        use_shape_conditioning=config.get("use_shape_conditioning", False),
+        shape_condition_channels=config.get("shape_condition_channels", 8),
         class_channels=config.get("class_channels", 0),
         alpha_living_threshold=config.get("alpha_living_threshold", 0.1),
         cell_fire_rate=config.get("cell_fire_rate", 0.5),
         clip_range=config.get("clip_range", 64.0),
         use_tanh=config.get("use_tanh", True),
         freeze_perception=config.get("freeze_perception", True),
+        use_adaptive_pooling=config.get("use_adaptive_pooling", False),
     )
 
 
-def _load_pretrained_from_local(path, filename, config_filename):
+def _load_pretrained_from_local(path, filename, config_filename, config_overrides=None):
     if path.is_dir():
         config_path = path / config_filename
         weights_path = path / filename
@@ -528,25 +658,29 @@ def _load_pretrained_from_local(path, filename, config_filename):
             raise FileNotFoundError(f"Missing pretrained weights: {weights_path}")
         with config_path.open("r") as f:
             config = json.load(f)
-        model = create_model_from_config(config)
-        return _load_pretrained_weights(model, weights_path)
+        state_dict = _load_state_dict(weights_path)
+        model = _create_model_for_state_dict(config, state_dict, config_overrides)
+        model.load_state_dict(state_dict)
+        return model
 
     checkpoint = torch.load(path, map_location="cpu")
     config = checkpoint.get("model_config") or checkpoint.get("config")
     if config is None:
         raise ValueError("Local checkpoint must contain `model_config` or `config`.")
-    model = create_model_from_config(config)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
+    model = _create_model_for_state_dict(config, state_dict, config_overrides)
     model.load_state_dict(state_dict)
     return model
 
 
 def _prepare_batch(batch, device):
     structures, damage_directions, labels = batch[:3]
+    original_shapes = batch[3] if len(batch) > 3 else structures
     return (
         structures.float().to(device),
         damage_directions.long().to(device),
         labels.long().to(device),
+        original_shapes.float().to(device),
     )
 
 
@@ -575,7 +709,33 @@ def _label_tensor(class_label, batch_size, device, use_labels):
 
 
 def _load_pretrained_weights(model, weights_path):
-    checkpoint = torch.load(weights_path, map_location="cpu")
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    state_dict = _load_state_dict(weights_path)
     model.load_state_dict(state_dict)
     return model
+
+
+def _load_state_dict(weights_path):
+    checkpoint = torch.load(weights_path, map_location="cpu")
+    return checkpoint.get("model_state_dict", checkpoint)
+
+
+def _create_model_for_state_dict(config, state_dict, config_overrides=None):
+    config = dict(config)
+    if config_overrides:
+        config.update(config_overrides)
+
+    inferred_adaptive_pooling = infer_adaptive_pooling_from_state_dict(state_dict)
+    if inferred_adaptive_pooling is not None:
+        config["use_adaptive_pooling"] = inferred_adaptive_pooling
+    return create_model_from_config(config)
+
+
+def infer_adaptive_pooling_from_state_dict(state_dict):
+    shape_encoder_weight = state_dict.get("shape_encoder.4.weight")
+    if shape_encoder_weight is None:
+        return None
+    if shape_encoder_weight.ndim == 2:
+        return True
+    if shape_encoder_weight.ndim == 5:
+        return False
+    return None

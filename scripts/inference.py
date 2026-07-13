@@ -165,6 +165,7 @@ def render_sample(
         damaged_shape.numpy(),
         steps=steps,
         class_label=label_id,
+        shape_condition=original_shape.numpy(),
     )
     predicted_damage = prediction.damage_labels.squeeze(0).cpu().numpy().astype(np.uint8)
     predicted_class = None

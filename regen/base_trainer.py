@@ -18,13 +18,17 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=buffer_size)
         self.sampling_prob = sampling_prob
 
-    def add(self, states, damage_directions, labels):
+    def add(self, states, damage_directions, labels, conditions=None):
         for i in range(states.shape[0]):
+            condition = None
+            if conditions is not None:
+                condition = conditions[i].detach().cpu().clone()
             self.buffer.append(
                 (
                     states[i].detach().cpu().clone(),
                     damage_directions[i].detach().cpu().clone(),
                     labels[i].detach().cpu().clone(),
+                    condition,
                 )
             )
 
@@ -33,11 +37,17 @@ class ReplayBuffer:
             return None
 
         indices = random.sample(range(len(self.buffer)), batch_size)
-        states, damage_directions, labels = zip(*[self.buffer[i] for i in indices])
+        states, damage_directions, labels, conditions = zip(
+            *[self.buffer[i] for i in indices]
+        )
+        stacked_conditions = None
+        if conditions[0] is not None:
+            stacked_conditions = torch.stack(conditions).to(device)
         return (
             torch.stack(states).to(device),
             torch.stack(damage_directions).to(device),
             torch.stack(labels).to(device),
+            stacked_conditions,
         )
 
     def __len__(self):
@@ -217,11 +227,12 @@ class BaseNCA3DTrainer(ABC):
             return next(self.train_iter)
 
     def prepare_damage_batch(self, batch):
-        structures, damage_directions, labels, _ = batch
+        structures, damage_directions, labels, original_shapes = batch
         return (
             structures.to(self.device),
             damage_directions.to(self.device),
             labels.to(self.device),
+            original_shapes.to(self.device),
         )
 
     def should_use_replay_buffer(self):
@@ -233,14 +244,14 @@ class BaseNCA3DTrainer(ABC):
     def sample_replay_buffer(self):
         return self.replay_buffer.sample(self.batch_size, self.device)
 
-    def run_nca(self, states, labels=None):
+    def run_nca(self, states, condition=None):
         states_history = [states.detach()]
         steps_per_sample = random.randint(
             self.min_steps_per_sample,
             self.max_steps_per_sample,
         )
         for _ in range(steps_per_sample):
-            if labels is None:
+            if condition is None:
                 if self.gradient_checkpointing and self.model.training:
                     states = checkpoint(self.model, states, use_reentrant=False)
                 else:
@@ -248,12 +259,12 @@ class BaseNCA3DTrainer(ABC):
             else:
                 if self.gradient_checkpointing and self.model.training:
                     states = checkpoint(
-                        lambda current_states: self.model(current_states, labels),
+                        lambda current_states: self.model(current_states, condition),
                         states,
                         use_reentrant=False,
                     )
                 else:
-                    states = self.model(states, labels)
+                    states = self.model(states, condition)
             states_history.append(states.detach())
         return states, states_history
 
@@ -262,6 +273,7 @@ class BaseNCA3DTrainer(ABC):
         states_history,
         damage_directions,
         labels,
+        conditions,
         num_samples=1,
     ):
         if not self.replay_buffer.buffer.maxlen or len(states_history) <= 1:
@@ -275,12 +287,15 @@ class BaseNCA3DTrainer(ABC):
                 states_history[step_idx],
                 damage_directions,
                 labels,
+                conditions,
             )
 
     def replay_samples_per_fresh_batch(self):
         return 1
 
-    def rollout_labels(self, labels):
+    def rollout_condition(self, labels, original_shapes):
+        if getattr(self.model, "use_shape_conditioning", False):
+            return original_shapes
         if getattr(self.model, "use_class_embeddings", False):
             return labels
         return None
@@ -303,17 +318,21 @@ class BaseNCA3DTrainer(ABC):
                 if sampled is None:
                     use_buffer = False
                 else:
-                    states, damage_directions, labels = sampled
+                    states, damage_directions, labels, conditions = sampled
 
             if not use_buffer:
-                structures, damage_directions, labels = self.prepare_damage_batch(
-                    self.next_train_batch()
-                )
+                (
+                    structures,
+                    damage_directions,
+                    labels,
+                    original_shapes,
+                ) = self.prepare_damage_batch(self.next_train_batch())
                 states = self.model.initialize(structures)
+                conditions = self.rollout_condition(labels, original_shapes)
 
             final_state, states_history = self.run_nca(
                 states,
-                self.rollout_labels(labels),
+                conditions,
             )
 
             if not use_buffer:
@@ -321,6 +340,7 @@ class BaseNCA3DTrainer(ABC):
                     states_history,
                     damage_directions,
                     labels,
+                    conditions,
                     num_samples=self.replay_samples_per_fresh_batch(),
                 )
 

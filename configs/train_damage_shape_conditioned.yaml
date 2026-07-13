@@ -1,21 +1,6 @@
 seed: 0
 run:
-  mode: modal
-  app_name: nca-3d-trainer
-  detach: true
-  gpu: A10G
-  timeout_seconds: 75600
-  secret_env: [HF_TOKEN, WANDB_API_KEY]
-  requirements:
-    - numpy
-    - torch
-    - tensorboard
-    - matplotlib
-    - wandb
-    - Pillow
-    - tqdm
-    - huggingface_hub
-    - PyYAML
+  mode: local
 dataset:
   source: npy
   shapes_path: data/xdata_7class.npy
@@ -29,15 +14,17 @@ dataset:
   fixed_damage: false
 model:
   type: damage
-  use_class_embeddings: true
+  use_class_embeddings: false
+  use_shape_conditioning: true
+  shape_condition_channels: 8
   num_hidden_channels: 20
   num_damage_directions: 7
   clip_range: 64.0
   use_tanh: false
 training:
   epochs: 500
-  batch_size: 16
-  lr: 0.001
+  batch_size: 8
+  lr: 0.0005
   iterations_per_epoch: 100
   min_steps_per_sample: 96
   max_steps_per_sample: 128
@@ -46,19 +33,9 @@ training:
   focal_gamma: 2.0
   buffer_size: 1000
   buffer_sampling_prob: 0.2
-  grad_clip: 1.0
-  gradient_checkpointing: false
-  num_workers: 0
-  wandb_project: nca-3d-damage
-  wandb_run_name: npy-damage-hdim-20-fast-damage
-  wandb_watch: true
-  wandb_watch_log: all
-  wandb_watch_log_freq: 100
-  wandb_log_gradient_sums: true
-  wandb_gradient_log_freq: 1
 output:
-  save_dir: nca_models
+  save_dir: shape_conditioned_damage_nca_models
   save_frequency: 10
   visualization_frequency: 10
-  repo_id: shyamsn97/cube-regen-damage-detection-all-classes-hdim-20
+  repo_id: shyamsn97/cube-regen-shape-conditioned-damage-hdim-20
   repo_type: model

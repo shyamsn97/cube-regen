@@ -170,8 +170,16 @@ def parse_args():
     )
     parser.add_argument(
         "--unconstrained-recovery",
+        dest="unconstrained_recovery",
         action="store_true",
-        help="Allow predicted recovery outside the known original Sakana shape.",
+        default=True,
+        help="Allow predicted recovery outside the known original Sakana shape (default).",
+    )
+    parser.add_argument(
+        "--constrained-recovery",
+        dest="unconstrained_recovery",
+        action="store_false",
+        help="Restrict recovery to the known original Sakana shape.",
     )
     return parser.parse_args()
 

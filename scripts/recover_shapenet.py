@@ -43,7 +43,7 @@ def parse_args():
         default=None,
         help="Optional ShapeNet category folder/name to sample from.",
     )
-    parser.add_argument("--sample-index", type=int, default=0)
+    parser.add_argument("--sample-index", type=int, default=1)
     parser.add_argument("--seed", type=int, default=None)
     return parser.parse_args()
 

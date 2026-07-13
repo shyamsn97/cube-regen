@@ -8,19 +8,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from regen.train_config import load_config, load_training_data, train_from_config
+from regen.train_config import load_config, load_training_data, train_from_config  # noqa: E402
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train cube-regen from a YAML config.")
     parser.add_argument("--config", default="configs/train_combined.yaml")
     parser.add_argument("--mode", choices=["local", "modal"], default=None)
+    parser.add_argument("--use-adaptive-pooling", type=parse_bool, default=None)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     config = load_config(args.config)
+    apply_model_overrides(config, args)
     mode = args.mode or config.get("run", {}).get("mode", "local")
     print_summary(config, mode, args.config)
 
@@ -31,6 +33,22 @@ def main():
         run_modal(config)
         return
     raise ValueError(f"Unsupported training mode: {mode}")
+
+
+def parse_bool(value):
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value!r}.")
+
+
+def apply_model_overrides(config, args):
+    if args.use_adaptive_pooling is not None:
+        config.setdefault("model", {})["use_adaptive_pooling"] = (
+            args.use_adaptive_pooling
+        )
 
 
 def print_summary(config, mode, config_path):

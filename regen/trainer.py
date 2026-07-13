@@ -1,6 +1,7 @@
 import os
 import time
 from importlib import import_module
+from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
@@ -13,6 +14,20 @@ from regen.base_trainer import BaseNCA3DTrainer, ReplayBuffer
 from regen.utils import plot_voxels
 
 __all__ = ["ReplayBuffer", "NCA3DTrainer"]
+
+
+def wandb_safe_config(value):
+    if isinstance(value, dict):
+        return {str(key): wandb_safe_config(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [wandb_safe_config(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
 
 
 class NCA3DTrainer(BaseNCA3DTrainer):
@@ -52,6 +67,7 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         repo_id=None,
         repo_type="model",
         trainer_name=None,
+        experiment_config=None,
     ):
         train_dataset = train_dataset if train_dataset is not None else dataset
         if train_dataset is None:
@@ -114,6 +130,7 @@ class NCA3DTrainer(BaseNCA3DTrainer):
                 "save_dir": self.save_dir,
                 "repo_id": repo_id,
                 "repo_type": repo_type,
+                "experiment_config": wandb_safe_config(experiment_config or {}),
             },
             wandb_watch=wandb_watch,
             wandb_watch_log=wandb_watch_log,
@@ -233,9 +250,14 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         totals = {}
         batch_count = 0
         for batch in self.val_loader:
-            structures, damage_directions, labels = self.prepare_damage_batch(batch)
+            structures, damage_directions, labels, original_shapes = (
+                self.prepare_damage_batch(batch)
+            )
             states = self.model.initialize(structures)
-            final_state, _ = self.run_nca(states, self.rollout_labels(labels))
+            final_state, _ = self.run_nca(
+                states,
+                self.rollout_condition(labels, original_shapes),
+            )
             _, metrics = self.loss_and_metrics(final_state, damage_directions, labels)
             batch_count += 1
             for key, value in self.metric_items(metrics).items():
@@ -251,9 +273,14 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         damaged_correct = 0
         damaged_total = 0
         for batch in DataLoader(self.dataset, batch_size=self.batch_size):
-            damage_mask, damage_direction, label = self.prepare_damage_batch(batch)
+            damage_mask, damage_direction, label, original_shape = (
+                self.prepare_damage_batch(batch)
+            )
             state = self.model.initialize(damage_mask).to(self.device)
-            state, _ = self.run_nca(state, self.rollout_labels(label))
+            state, _ = self.run_nca(
+                state,
+                self.rollout_condition(label, original_shape),
+            )
             predictions = self.model.classify(state)
             predicted_labels = torch.argmax(predictions, dim=-1)
 
@@ -490,15 +517,21 @@ class NCA3DTrainer(BaseNCA3DTrainer):
         self.model.eval()
 
         with torch.no_grad():
-            damage_mask_tensor, damage_direction_tensor, label, _ = self.dataset[0]
+            damage_mask_tensor, damage_direction_tensor, label, original_shape = (
+                self.dataset[0]
+            )
             damage_mask_tensor = damage_mask_tensor.unsqueeze(0).to(self.device)
             damage_direction_tensor = damage_direction_tensor.unsqueeze(0).to(
                 self.device
             )
             label = label.unsqueeze(0).to(self.device)
+            original_shape = original_shape.unsqueeze(0).to(self.device)
 
             state = self.model.initialize(damage_mask_tensor).to(self.device)
-            state, _ = self.run_nca(state, self.rollout_labels(label))
+            state, _ = self.run_nca(
+                state,
+                self.rollout_condition(label, original_shape),
+            )
             predictions = self.model.classify(state)
             predictions = torch.argmax(predictions, dim=-1).detach().cpu().numpy()[0]
 
