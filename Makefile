@@ -92,8 +92,8 @@ SHAPE_CONDITIONED_RECOVERY_NUM_DAMAGE_SITES_RANGE ?= 2 3
 SHAPE_CONDITIONED_RECOVERY_MIN_DAMAGE_TARGET_CELLS ?= 8
 SHAPE_CONDITIONED_RECOVERY_MAX_DAMAGE_ATTEMPTS ?= 10
 # One representative shape per class as CLASS:SAMPLE_INDEX pairs.
-# 0 plane (14), 1 chair, 2 car, 3 table (round=104), 4 cabinet (5), 5 lamp, 6 bench.
-SHAPE_CONDITIONED_RECOVERY_SAMPLES ?= 0:14 1:0 2:0 3:104 4:5 5:0 6:0
+# 0 plane (14), 1 chair, 2 car (4), 3 table (round=26), 4 cabinet (5), 5 lamp, 6 bench.
+SHAPE_CONDITIONED_RECOVERY_SAMPLES ?= 0:14 1:0 2:4 3:26 4:5 5:0 6:0
 COMBINED_RECOVERY_REPO ?= shyamsn97/cube-regen-combined-hdim-20
 COMBINED_RECOVERY_CONFIG ?= $(COMBINED_MODAL_CONFIG)
 COMBINED_RECOVERY_OUTPUT_DIR ?= examples/recovery/combined
@@ -110,8 +110,8 @@ COMBINED_RECOVERY_MIN_DAMAGE_TARGET_CELLS ?= 8
 COMBINED_RECOVERY_MAX_DAMAGE_ATTEMPTS ?= 10
 COMBINED_RECOVERY_UNCONSTRAINED ?= 1
 # One representative shape per class as CLASS:SAMPLE_INDEX pairs.
-# 0 plane (14), 1 chair, 2 car, 3 table (round=104), 4 cabinet (5), 5 lamp, 6 bench.
-COMBINED_RECOVERY_SAMPLES ?= 0:14 1:0 2:0 3:104 4:5 5:0 6:0
+# 0 plane (14), 1 chair, 2 car (4), 3 table (round=26), 4 cabinet (5), 5 lamp, 6 bench.
+COMBINED_RECOVERY_SAMPLES ?= 0:14 1:0 2:4 3:26 4:5 5:0 6:0
 RECOVERY_INFERENCE_STEPS ?= 256
 RECOVERY_ITERATIONS ?= 256
 RECOVERY_FRAME_STRIDE ?= 1
